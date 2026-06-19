@@ -4,6 +4,17 @@ Newest first. Each entry: the decision, and *why*, so nothing gets re-argued lat
 
 ---
 
+2026-06-19: **Milestone 4 ranking (PLANNED) = cross-sectional PERCENTILE-RANK scoring;
+swing "leading sector" = TOP 3 sectors.** Each profile scores a name as a weighted sum of
+per-signal percentile ranks — every signal ranked 0–1 across the screened universe and
+direction-adjusted so "lower is better" inputs (e.g. forward P/E) invert. Chosen over z-score
+and min–max because it is outlier-proof (no single runaway name dominates the score) and yields
+the clean "Nth-percentile on signal X" reason breakdown the dashboard needs (spec §8). Sector
+strength ranks the 11 GICS sectors by median 3-month member return; the swing leading-sector
+filter passes only names in the top 3. Default policies (revisit during the build): a missing
+signal scores at the neutral 0.5 rather than penalize, and a hard filter on a missing value
+fails closed.
+
 2026-06-19: **Milestone 3 indicator engine (DONE) — fixed numeric conventions, locked so
 they don't get silently re-broken.** `screener/indicators.py` is a pure, network-free layer
 over the canonical price frame; the profiles consume it in M4. The non-obvious choices:
