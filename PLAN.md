@@ -64,3 +64,15 @@ scope before writing code in each. Check each milestone's output against `spec.m
 - `CoinGeckoProvider` + crypto universe; swing/momentum profiles only (no fundamentals).
 - Asset-class toggle becomes live.
 - Natural-language agent layer on top of the deterministic engine.
+
+## v3 (ML research track — gated on a backtest harness; see DECISIONS.md)
+- **Backtest harness first** (prerequisite for any ML): walk-forward / purged CV,
+  look-ahead guards, transaction-cost modelling. Likely its own milestone.
+- **ML enters as a SIGNAL, not the engine:** a model's output becomes one more
+  `SignalSpec` (e.g. `ml_forward_return_rank`) feeding the deterministic percentile
+  ranker — the explainable ranking stays the backbone and the model stays toggle-off.
+- **Start simple, escalate only on evidence:** gradient-boosted trees (LightGBM/XGBoost)
+  over the existing `snapshot()` features first; reach for a sequence model
+  (e.g. Temporal Fusion Transformer) only if the simple model shows real out-of-sample edge.
+- Keep it descriptive ("model rates this setup top-decile vs peers"), not predictive —
+  stays inside "describes, does not advise".

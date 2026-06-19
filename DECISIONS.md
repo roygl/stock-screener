@@ -4,6 +4,26 @@ Newest first. Each entry: the decision, and *why*, so nothing gets re-argued lat
 
 ---
 
+2026-06-19: **Deep learning / ML (incl. the Temporal Fusion Transformer, TFT) is DEFERRED to a
+post-MVP research track (PLAN.md v3); when it lands it enters as a *signal feeding the
+deterministic percentile ranker*, never as the ranking/forecasting engine itself.** Raised by a
+"should we use TFT?" question. TFT is a multi-horizon *forecasting* model — and predicting future
+return is a buy/sell call in disguise, which collides with the locked "ranks/describes, does not
+advise" decision (legal: the author isn't a licensed advisor) and with the explainable
+"Nth-percentile on signal X" reason breakdown (spec §8) that is the product's whole value. It is
+also premature and ill-fit *now*: M4's ranker isn't finished and there is no backtest harness to
+measure a model against; ~503 names × ~2y of daily OHLCV is far too thin for a parameter-hungry
+transformer (it will overfit in-sample) and equity series are low signal-to-noise / non-stationary
+(naive DL rarely beats a simple baseline out-of-sample); responsible use needs walk-forward /
+purged CV, look-ahead guards, and transaction-cost modelling — its own project. The sanctioned path
+when the time comes: (1) build the **backtest harness FIRST**; (2) try **gradient-boosted trees**
+(LightGBM/XGBoost) over the existing `snapshot()` features — robust on small tabular data, cheap,
+and the feature-importances fit the "why it ranks" story; (3) escalate to a sequence model like TFT
+**only if** the simple model shows real out-of-sample edge. Whatever the model, its output becomes
+one more `SignalSpec` (e.g. `ml_forward_return_rank`) that the existing scorer weights — so the
+percentile ranker stays the backbone, stays swappable, and the model stays toggle-off — and it is
+surfaced descriptively ("model rates this setup top-decile vs peers"), not as a prediction.
+
 2026-06-19: **Milestone 4 ranking (PLANNED) = cross-sectional PERCENTILE-RANK scoring;
 swing "leading sector" = TOP 3 sectors.** Each profile scores a name as a weighted sum of
 per-signal percentile ranks — every signal ranked 0–1 across the screened universe and
