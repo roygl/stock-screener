@@ -22,7 +22,7 @@ scope before writing code in each. Check each milestone's output against `spec.m
 - **Done when:** one call returns clean price history + fundamentals for the universe,
   served from cache on the second run.
 
-## Milestone 3 — Indicator engine
+## Milestone 3 — Indicator engine  ✅ DONE
 - Pure functions over price data:
   - Momentum: 1 / 3 / 6 / 12-mo trailing returns
   - Moving averages: generic SMA(n) and EMA(n) — supports 20/50/150 SMA and 5/9 EMA
@@ -31,7 +31,9 @@ scope before writing code in each. Check each milestone's output against `spec.m
   - Distance from 52-week high
 - MA structure helpers: price-vs-MA, stacking (20>50>150), 5/9 cross detection.
 - **Done when:** every variable in spec §6 computes correctly for a sample ticker
-  (unit-tested against a hand-checked example).
+  (unit-tested against a hand-checked example). ✅ `screener/indicators.py` + `snapshot()`
+  (21 spec §6 keys); 63 unit tests (hand-checked + property + edge), green under both
+  `pytest` and the standalone runner.
 
 ## Milestone 4 — Profile + ranking engine
 - Express each profile as a **config**: filters (hard cutoffs) + weights (for scoring).

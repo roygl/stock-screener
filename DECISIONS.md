@@ -4,6 +4,35 @@ Newest first. Each entry: the decision, and *why*, so nothing gets re-argued lat
 
 ---
 
+2026-06-19: **Milestone 3 indicator engine (DONE) — fixed numeric conventions, locked so
+they don't get silently re-broken.** `screener/indicators.py` is a pure, network-free layer
+over the canonical price frame; the profiles consume it in M4. The non-obvious choices:
+- **RSI = Wilder's smoothing with the canonical seed.** The first average is the simple mean
+  of the first `n` changes (placed at index `n`), then `avg = (avg·(n-1)+x)/n`. We do NOT use
+  pandas `ewm(alpha=1/n, adjust=False)`: its recursion seeds from bar 0 and measurably diverges
+  from Wilder (e.g. 54.73 vs 52.14 on a sample series). A test pins rsi() against an independent
+  reference loop — do not "simplify" it back to `ewm`.
+- **No lookahead; `min_periods == window`** so an under-filled window is NaN, with ONE
+  documented exception: `distance_from_high` uses `min_periods=1` so a recent IPO measures
+  distance from its *available* high instead of NaN.
+- **`relative_volume` excludes the current bar** (`volume / volume.shift(1).rolling(n).mean()`)
+  and zero-guards the divisor to NaN, so a degenerate window reads "undefined" rather than `+inf`
+  (which would otherwise sort straight to the top of the M4 ranker).
+- **`price_above_ma` returns `None` (not `False`) when undefined** — "unknown" stays distinct
+  from "below"; `is_stacked` returns `False` if any MA is undefined.
+- **`snapshot(price_df)` is a fixed 21-key per-ticker feature dict** (exactly the spec §6 PRICE
+  variables) — the surface M4 reads. Profile-specific extras (e.g. swing's 10/20 EMA pullback)
+  are computed on demand via the generic `sma(n)`/`ema(n)`/`pct_from_ma`, per the per-profile-MA
+  decision below. Built via an implement → 4-lens adversarial-verify → fix workflow; the panel
+  caught the RSI seed bug and four minor robustness gaps (incl. the rel-volume `+inf` guard).
+
+2026-06-19: **Test layer = framework-agnostic; `pytest` is an optional runner.** `tests/`
+holds plain `assert` + `math.isclose` functions with a `__main__` runner and imports neither
+`pytest` nor `yfinance`, so the suite runs both under `pytest` and as a bare script
+(`python tests/test_indicators.py`) — resilient when offline. `pytest>=8` is added to
+requirements as a convenience, not a hard dependency. Tests use synthetic data only (no
+network); a repo-root `sys.path` insert lets `import screener` resolve when run standalone.
+
 2026-06-19: **Milestone 2 cache = Parquet (prices) + JSON (fundamentals/earnings),
 keyed by `symbol + date`.** Files live under `.cache/<namespace>/<symbol>__<date>.<ext>`;
 the date in the filename *is* the freshness check (today's file = hit, else refetch),
