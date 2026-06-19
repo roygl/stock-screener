@@ -4,6 +4,40 @@ Newest first. Each entry: the decision, and *why*, so nothing gets re-argued lat
 
 ---
 
+2026-06-20: **Milestone 5 dashboard (DONE) — thin `app.py` over a pure `screener/display.py`,
+with a hard cold-scan guard and a select-then-explain "why it ranks" panel.** The Streamlit layer is
+deliberately split so the project's "everything is unit-tested offline" ethos survives the UI: `app.py`
+owns ONLY the widgets + `st.session_state` orchestration; every testable piece (the four-filter
+pipeline, table-column selection, the `reasons`→tidy-frame builder, value formatting, the earnings
+badge/summary, selection reconciliation, all messages, and a pure column-config *descriptor* dict)
+lives in `screener/display.py`, which imports pandas/numpy/`Profile` and **never streamlit** — covered
+by 24 framework-agnostic tests in `tests/test_display.py` (same plain-`assert` + `__main__`-runner style
+as the M3/M4 suites; no pytest/yfinance/streamlit import). The non-obvious choices:
+- **Cold-scan guard (the central risk).** A full 503-name scan is ~503×3 yfinance calls / many minutes,
+  and the on-disk cache is only day-fresh, so the engine is invoked at **exactly one site** — inside
+  `if run_clicked:` behind a "Run scan" button — with a **small default universe slice** (slider
+  default 25, max = full universe) and an `@st.cache_data` memo keyed on
+  `(profile_name, n_names, cache_day=date.today().isoformat())`. The day in the key aligns the memo
+  with cache.py's date-keyed disk cache and `run_screen`'s `as_of=today` default (don't drop it, or a
+  stale cross-day result gets served). Sorting (native `st.dataframe` header-click) and the four sidebar
+  filters operate purely in pandas on the cached frame and **never re-run the engine** (verified by a
+  headless `AppTest`: 0 engine calls on load, 1 on Run, 0 on filter/sort, 0 on identical re-Run).
+- **"Why it ranks" = a select-then-explain detail panel below the table, NOT a literal per-row expander**
+  (PLAN.md said "expander"): `st.dataframe` has no per-row expander, so a row is chosen via dual input
+  (native single-row `on_select` click + a deterministic selectbox, reconciled to one symbol in
+  session_state, validated against the current filtered view so a filtered-out selection can't crash a
+  keyed selectbox) and its `reasons` render as value/percentile/contribution per signal with a
+  contributions-sum-to-score caption.
+- **Percent columns use the `st.column_config` `"percent"` PRESET, which multiplies the engine's
+  FRACTION by 100 for display** (0.12 → "12.00%"); the pure descriptor carries `format="percent"` and a
+  test pins it — a printf `"%.1f%%"` would silently render the raw 0.12 and drop the ×100 (a review lens
+  wrongly flagged a 100× bug here; the installed `NumberColumn` docstring example `1234.567 → 123456.70%`
+  settled it). All earnings UI is gated on `profile.flags` (swing-only), not column presence (the column
+  exists for every profile in a non-empty result). Four mutually-exclusive states
+  (PRE_SCAN / ENGINE_EMPTY / FILTERED_EMPTY / RESULTS); the not-advice disclaimer lives in the sidebar
+  so it shows in all four. Built via a design-panel → synthesize → implement → 3-lens adversarial-review
+  workflow; the review also caught the now-deprecated `use_container_width` (switched to `width="stretch"`).
+
 2026-06-19: **Deep learning / ML (incl. the Temporal Fusion Transformer, TFT) is DEFERRED to a
 post-MVP research track (PLAN.md v3); when it lands it enters as a *signal feeding the
 deterministic percentile ranker*, never as the ranking/forecasting engine itself.** Raised by a

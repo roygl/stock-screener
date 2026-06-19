@@ -17,7 +17,7 @@ step — it does not replace charting, broker execution, or live alerting.
 - **Caching:** local cache layer so we don't hammer Yahoo
 
 ## Active task
-> Milestone 3 — Indicator engine (DONE). Next: Milestone 4 — Profile + ranking engine. See PLAN.md.
+> Milestone 5 — Dashboard (DONE). Next: Milestone 6 — Validate + polish. See PLAN.md.
 
 ## Key decisions (full log in DECISIONS.md)
 - Build a **dashboard first**, add a natural-language **agent layer later**.

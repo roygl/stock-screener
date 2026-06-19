@@ -44,12 +44,18 @@ scope before writing code in each. Check each milestone's output against `spec.m
 - Compute **sector strength** (group performance) to support the swing "leading sector" filter.
 - **Done when:** selecting a profile returns a sensible scored, ranked DataFrame.
 
-## Milestone 5 — Dashboard
+## Milestone 5 — Dashboard  ✅ DONE
 - Profile **toggle** (the asset-class toggle is a no-op stub until v2 crypto).
 - Sortable / filterable results table.
 - Per-row "why it ranks" expander (which signals fired).
 - Earnings-window warning badge on swing results.
-- **Done when:** a user can pick a profile and read/sort/filter the ranked list in the browser.
+- **Done when:** a user can pick a profile and read/sort/filter the ranked list in the browser. ✅
+  `app.py` (thin Streamlit wiring) + `screener/display.py` (pure, streamlit/network-free) +
+  `tests/test_display.py` (24 offline tests). Profile radio, disabled asset-class stub, native
+  header-sort + four sidebar filters, and the swing earnings badge/banner all wired to `run_screen`.
+  "Why it ranks" is a **select-then-explain detail panel** below the table (value/percentile/
+  contribution per signal) — st.dataframe has no per-row expander; see DECISIONS.md. Cold-scan
+  guard: engine called at one site behind a "Run scan" button + small default slice + `st.cache_data`.
 
 ## Milestone 6 — Validate + polish
 - Spot-check numbers against Yahoo Finance.
