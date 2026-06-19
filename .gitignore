@@ -1,0 +1,39 @@
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+
+# --- Virtual environments ---
+.venv/
+venv/
+env/
+
+# --- Local cache & data dumps ---
+# Price/fundamentals/earnings cache written by screener.cache (repo-root .cache/).
+# NOTE: data/universe.csv is the shipped reference universe — keep it tracked.
+.cache/
+
+# --- Logs ---
+*.log
+
+# --- Secrets / env ---
+.env
+.env.*
+.streamlit/secrets.toml
+
+# --- Test / tooling caches ---
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.ipynb_checkpoints/
+
+# --- Local archives / scratch ---
+*.zip
+
+# --- OS / editor noise ---
+.DS_Store
+.idea/
+.vscode/

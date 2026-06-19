@@ -1,0 +1,58 @@
+# DECISIONS.md — Decision Log
+
+Newest first. Each entry: the decision, and *why*, so nothing gets re-argued later.
+
+---
+
+2026-06-19: **Milestone 2 cache = Parquet (prices) + JSON (fundamentals/earnings),
+keyed by `symbol + date`.** Files live under `.cache/<namespace>/<symbol>__<date>.<ext>`;
+the date in the filename *is* the freshness check (today's file = hit, else refetch),
+and a write prunes older-dated files for that key. Chose Parquet over SQLite because
+`pyarrow` is already in the stack and price history is naturally a DataFrame — no schema
+/ ORM overhead. EOD data only moves once a day, so a per-day key is the right grain.
+
+2026-06-19: **Provider fails soft, per ticker.** `yfinance` is unofficial and
+scraping-based, so every fetch is wrapped: a bad ticker yields an empty frame / `None`
+and a logged warning instead of aborting a ~500-name universe scan. Only positive results
+are cached (an empty fundamentals snapshot or a missing earnings date may be transient or
+simply "not announced yet", so we retry next run). Internal symbols are upper-cased to
+match `universe.csv`; Yahoo's dashed class-share form (`BRK.B` → `BRK-B`) is applied only
+at the network edge.
+
+2026-06-19: **`DataProvider` interface = `price_history` / `fundamentals` /
+`earnings_date`** (+ concrete `bulk_*` fan-outs). Prices come back as ~2y of tz-naive
+daily OHLCV (lower-cased columns, `date` index) — enough for 12-mo momentum, the 150-day
+SMA, 52-wk high, and MACD/EMA warm-up. Batched `yf.download` for cold universe pulls is a
+noted later speed optimization; the cache makes warm runs instant regardless.
+
+2026-06-19: **Milestone 1 universe = static S&P 500 list (503 tickers).** Loaded from
+`data/universe.csv` (symbol, name, sector) via `screener/universe.py`. Sector ships now
+because M4's swing profile needs sector-strength membership. Russell 1000 / market-cap
+floor remain options for later (spec §11).
+
+2026-06-19: **Stayed with Python + Streamlit after revisiting Node/TS.** User is fluent
+in TS/JS, so we weighed a TypeScript stack (Next.js + React + TanStack Table +
+`yahoo-finance2`). Python won for v1: pandas/numpy + yfinance are the ideal fit for the
+indicator/data core, and Streamlit makes the table/filter/toggle UI nearly free. Revisit
+only if it goes multi-user with a custom frontend — at which point the layered design
+makes a FastAPI + React port cheap.
+
+2026-06-19: **Build a dashboard first; natural-language agent layer is later.** A
+screener's core job is deterministic filtering/ranking — a dashboard does that fast and
+without hallucination. An LLM is the wrong calculation engine; its right role is a later
+natural-language layer on top.
+
+2026-06-19: **Equity data = yfinance for the MVP, behind a `DataProvider` interface.**
+Free, gives price history (compute momentum/technicals ourselves) and forward P/E for
+US names. Unofficial/scraping-based, so cache and validate. Interface lets us swap to a
+paid API (e.g. FMP) later without touching the engine.
+
+2026-06-19: **Market = US large-cap equities for v1.** Crypto deferred to v2 (separate
+CoinGecko pipeline, no fundamentals).
+
+2026-06-19: **Moving averages are per-profile, not global.** 20/50/150 **SMA** for
+long-term & momentum (trend-template structure); 5/9 **EMA** for swing (the 5/9 cross is
+the live trigger). The engine computes any SMA(n)/EMA(n); the profile declares which it cares about.
+
+2026-06-19: **Tool ranks/describes, does not advise.** No buy/sell calls — keeps it
+useful and honest; the author is not a licensed advisor.
