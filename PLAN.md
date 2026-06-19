@@ -57,19 +57,33 @@ scope before writing code in each. Check each milestone's output against `spec.m
   contribution per signal) — st.dataframe has no per-row expander; see DECISIONS.md. Cold-scan
   guard: engine called at one site behind a "Run scan" button + small default slice + `st.cache_data`.
 
-## Milestone 6 — Validate + polish
+## Milestone 6 — Validate + polish  ✅ DONE
 - Spot-check numbers against Yahoo Finance.
 - Edge cases: missing data, thin volume, recent IPOs.
 - Set refresh cadence for the end-of-day pull.
 - Short README on how to run.
-- **Done when:** numbers reconcile and the app handles a full run without crashing.
+- **Done when:** numbers reconcile and the app handles a full run without crashing. ✅
+  Reconciled the math (offline hand-checks of SMA / momentum / Wilder-RSI / rel-volume / the full
+  percentile score + the contributions-sum-to-score invariant, plus a live AAPL spot-check);
+  `tests/test_edge_cases.py` (13 tests) pins fail-soft behavior on missing data / thin-or-zero
+  volume / recent IPOs — incl. the documented `dist_52w_high` IPO tilt, kept by design (DECISIONS.md);
+  `README.md` covers setup/run/profiles/ranking + a refresh-cadence section. 141 offline tests green;
+  app boots clean.
 
 ---
 
-## v2 (after MVP ships)
-- `CoinGeckoProvider` + crypto universe; swing/momentum profiles only (no fundamentals).
-- Asset-class toggle becomes live.
-- Natural-language agent layer on top of the deterministic engine.
+## Post-MVP (priority order, set 2026-06-20)
+- **Natural-language agent layer** (NEXT) — plain English → screen params → `run_screen`.
+  Offline-first: Anthropic Claude when `ANTHROPIC_API_KEY` is set, else a deterministic
+  rule-based parser; the engine stays the source of truth (a layer on top, not a replacement).
+- **Chart-pattern technical analysis** — descriptive detection of common shapes (wedges,
+  head & shoulders, cup & handle, triangles, double top/bottom, flags) via swing-pivot +
+  geometric rules; a per-ticker readout, never a buy/sell call. **EOD timeframes only —
+  1w / 1d / 1mo** (resampled from the daily bars); NO intraday/4h, to keep the end-of-day
+  decision (spec §9) and the date-keyed cache intact.
+- **Crypto / live asset-class toggle — DEPRIORITIZED** — `CoinGeckoProvider` + crypto
+  universe (swing/momentum only, no fundamentals). On hold per the 2026-06-20 decision;
+  the asset-class toggle stays a disabled stub.
 
 ## v3 (ML research track — gated on a backtest harness; see DECISIONS.md)
 - **Backtest harness first** (prerequisite for any ML): walk-forward / purged CV,

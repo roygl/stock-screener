@@ -4,6 +4,30 @@ Newest first. Each entry: the decision, and *why*, so nothing gets re-argued lat
 
 ---
 
+2026-06-20: **Milestone 6 (validate + polish, DONE) + post-MVP roadmap reset.** Validation confirmed
+the engine/provider are already fail-soft end-to-end across every enumerated edge case (missing/partial
+fundamentals, empty/bad ticker, thin/ZERO volume, all-NaN signal column, single/duplicate-symbol
+universe, all-filtered or wholly-empty universe), and the numbers reconcile (offline hand-checks of
+SMA / momentum / Wilder-RSI / rel-volume / the full percentile score and the contributions-sum-to-score
+invariant, plus a live AAPL spot-check). Shipped `README.md` (setup / run / the 3 profiles / how
+ranking works + a **refresh-cadence** section: run one scan per trading day in the morning, tied to the
+date-keyed cache and `as_of = today`) and `tests/test_edge_cases.py` (13 offline tests; 141 total).
+**One quality wart kept BY DESIGN, not "fixed":** a recent IPO sitting at its short available high gets
+`dist_52w_high = 0.0` (the best value) via the documented `min_periods=1` exception, so it can top the
+percentile on long_term/momentum despite thin history (every *other* short-history signal neutralizes to
+0.5). A min-bars guard was REJECTED — it would reverse the locked M3 `distance_from_high` convention and
+break two existing indicator tests — so M6 instead DOCUMENTED it (README "Known limitations") and
+REGRESSION-PINNED current behavior (`test_ipo_outranks_established_name_on_dist_52w_high` is the canary
+for any future guard). **Roadmap reset (user, 2026-06-20):** the v2 **crypto / live asset-class toggle
+is DEPRIORITIZED** ("don't do crypto") and stays a disabled stub; **next is the natural-language agent
+layer**, built **offline-first** (Anthropic Claude when `ANTHROPIC_API_KEY` is present, else a
+deterministic rule-based parser) as a layer ON TOP of the engine — not a replacement, preserving the
+locked "dashboard-first, agent-later, describes-not-advises" decisions; **then descriptive chart-pattern
+detection** (wedges, head & shoulders, cup & handle, triangles, double top/bottom, flags) via
+swing-pivot + geometric rules, **EOD timeframes ONLY — 1w / 1d / 1mo (resampled from daily); explicitly
+NO intraday / 4h**, to keep the end-of-day decision (spec §9) and the date-keyed cache intact. v3
+statistical/forecasting ML stays deferred (backtest harness first).
+
 2026-06-20: **Milestone 5 dashboard (DONE) — thin `app.py` over a pure `screener/display.py`,
 with a hard cold-scan guard and a select-then-explain "why it ranks" panel.** The Streamlit layer is
 deliberately split so the project's "everything is unit-tested offline" ethos survives the UI: `app.py`
