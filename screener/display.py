@@ -729,6 +729,47 @@ def format_signed_pct(x) -> str:
     return f"{v * 100:+.1f}%"
 
 
+def format_price(x) -> str:
+    """A ``$``-prefixed price, two decimals + thousands separators (fail-soft).
+
+    ``195.0 -> "$195.00"``, ``1234.5 -> "$1,234.50"``; missing / non-finite -> ``"—"``.
+    """
+    if _is_missing(x):
+        return _MISSING
+    try:
+        v = float(x)
+    except (TypeError, ValueError):
+        return _MISSING
+    if not np.isfinite(v):
+        return _MISSING
+    return f"${v:,.2f}"
+
+
+# Human-readable market-cap units, largest first.
+_CAP_UNITS = (("T", 1e12), ("B", 1e9), ("M", 1e6))
+
+
+def format_market_cap(x) -> str:
+    """Market cap in human units (fail-soft): ``1.23e12 -> "$1.2T"``,
+    ``3.45e11 -> "$345.0B"``, ``1.2e7 -> "$12.0M"``.
+
+    Below $1M falls back to a plain ``"$12,345"``. Missing / non-finite / ``<= 0``
+    (a degenerate or unknown cap) -> ``"—"``.
+    """
+    if _is_missing(x):
+        return _MISSING
+    try:
+        v = float(x)
+    except (TypeError, ValueError):
+        return _MISSING
+    if not np.isfinite(v) or v <= 0:
+        return _MISSING
+    for suffix, scale in _CAP_UNITS:
+        if v >= scale:
+            return f"${v / scale:.1f}{suffix}"
+    return f"${v:,.0f}"
+
+
 _EXTENSION_BADGES: "dict[str, str]" = {
     "normal": "🟢 Normal",
     "extended": "🟠 Extended",

@@ -297,7 +297,12 @@ def _render_results_grid(table_df: pd.DataFrame, profile) -> "str | None":
         fit_columns_on_grid_load=False,
         theme="streamlit",
         height=min(540, 56 + 30 * max(1, n)),
-        key="results_grid",
+        # Key the grid to its column SET: st_aggrid persists client-side column
+        # order per widget key, so a fixed key would carry the Compact order over
+        # when toggling to Detailed (or switching profiles). A column-derived key
+        # remounts the grid on any column change, so each view renders column_order
+        # cleanly. Stable within a session for an unchanged column set.
+        key=f"results_grid_{abs(hash(tuple(table_df.columns)))}",
     )
     sel = getattr(resp, "selected_rows", None)
     if isinstance(sel, pd.DataFrame):
@@ -588,6 +593,34 @@ def _render_results(
     reasons = row["reasons"]
 
     st.subheader(f"Why {symbol} ranks #{int(row['rank'])}")
+
+    # Company header card: the headline price/volatility/size numbers a mainstream
+    # finance site leads with, read straight off the in-hand row (all fail-soft to
+    # "—"). Daily change uses st.metric's delta for native green/red.
+    _price_col, _chg_col, _atr_col, _cap_col = st.columns(4)
+    _price_col.metric("Price", display.format_price(row.get("price")))
+    _chg_str = display.format_signed_pct(row.get("change_pct"))
+    _chg_col.metric(
+        "Daily change", _chg_str,
+        delta=_chg_str if _chg_str != "—" else None,
+    )
+    _atr_str = display.format_price(row.get("atr"))
+    _atr_pct_str = display.format_signed_pct(row.get("atr_pct"))
+    if _atr_str != "—" and _atr_pct_str != "—":
+        _atr_str = f"{_atr_str} ({_atr_pct_str})"
+    _atr_col.metric("ATR (14)", _atr_str)
+    _cap_col.metric("Market cap", display.format_market_cap(row.get("market_cap")))
+
+    # Industry (finer than sector) + the long "what the company does" prose, each
+    # shown only when present so a thin-data ticker doesn't render empty chrome.
+    _industry = row.get("industry")
+    if isinstance(_industry, str) and _industry.strip():
+        st.caption(f"Industry: {_industry.strip()}")
+    _summary = row.get("business_summary")
+    if isinstance(_summary, str) and _summary.strip():
+        with st.expander("What the company does"):
+            st.write(_summary.strip())
+
     st.metric("Fit score", f"{display.fit_score(row['score'])} / 100", help=display.SCORE_HELP)
 
     # Jump straight out to an external chart / quote for the inspected ticker.

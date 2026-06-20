@@ -826,6 +826,29 @@ def test_format_value_tactical_keys():
     # extension_state: the categorical badge text (never a float / KeyError).
     assert display.format_value("extension_state", "parabolic") == "🔴 Parabolic"
     assert display.format_value("extension_state", "normal") == "🟢 Normal"
+
+
+def test_format_price():
+    assert display.format_price(195.0) == "$195.00"
+    assert display.format_price(1234.5) == "$1,234.50"
+    assert display.format_price(0.0) == "$0.00"
+    assert display.format_price(None) == "—"
+    assert display.format_price(float("nan")) == "—"
+    assert display.format_price("not a number") == "—"
+
+
+def test_format_market_cap():
+    # Human units, one decimal, largest-first.
+    assert display.format_market_cap(1.23e12) == "$1.2T"
+    assert display.format_market_cap(3.45e11) == "$345.0B"
+    assert display.format_market_cap(1.2e7) == "$12.0M"
+    # Below $1M -> plain grouped dollars.
+    assert display.format_market_cap(5e5) == "$500,000"
+    # Degenerate / unknown caps fail soft.
+    assert display.format_market_cap(0) == "—"
+    assert display.format_market_cap(-5) == "—"
+    assert display.format_market_cap(None) == "—"
+    assert display.format_market_cap(float("nan")) == "—"
     assert display.format_value("extension_state", None) == "—"
 
 
