@@ -4,6 +4,31 @@ Newest first. Each entry: the decision, and *why*, so nothing gets re-argued lat
 
 ---
 
+2026-06-20: **Natural-language agent layer (DONE) — an offline-first translation layer ON TOP of the engine,
+never a replacement.** `screener/agent.py` maps a plain-English query to the same screen knobs the sidebar
+exposes (profile, universe size, sectors, score floor, symbol filter, swing earnings toggle) plus a one-line
+explanation; the deterministic engine still does the actual screening. The non-obvious choices:
+- **The engine stays the source of truth — the LLM only fills a typed form.** A single `validate_request` SAFETY
+  LAYER clamps/coerces EVERYTHING (profile → a valid registry name, n_names → 5..503, min_score → [0,1] with a
+  NaN/inf guard, sectors → canonicalized against the live universe with unknowns dropped, earnings_only → forced
+  False unless profile is swing) and NEVER raises. BOTH the LLM tool-call dict and the rule-based dict flow through
+  it, so a hallucinated or odd parameter can at worst pick a bounded-but-valid setting — it can't break, bypass a
+  filter, or mislead the engine.
+- **Offline-first; anthropic is an OPTIONAL dependency.** The module imports only stdlib at top, NEVER imports
+  streamlit, and LAZY-imports anthropic strictly inside the LLM call, so the app boots and the 20 offline tests run
+  with no key and no SDK installed. With `ANTHROPIC_API_KEY` + the SDK it uses Claude (`claude-opus-4-8` default,
+  overridable via `SCREENER_AGENT_MODEL`) via STRICT FORCED TOOL USE (a `set_screen` tool: every property required,
+  `additionalProperties` false, NO numeric min/max — clamping lives only in `validate_request`); on ANY failure it
+  degrades to the deterministic rule-based keyword parser. The system prompt constrains Claude to parameter
+  extraction only — never buy/sell/hold advice (preserves "describes, does not advise" and the dashboard-first,
+  agent-later decisions).
+- **UI wiring preserves the cold-scan guard.** A sidebar "Interpret & run" box is a SECOND trigger into the ONE
+  engine call site (`do_scan = run_clicked or <NL flag>`) via a two-phase stage → rerun → apply that seeds the
+  existing widget keys without Streamlit's default-vs-session_state warning; the four states and the disclaimer in
+  every state are untouched; a manual Run scan clears the stale NL banner. Built via a design → implement →
+  3-lens-review (correctness / security / integration) workflow; review caught a `validate_request` OverflowError
+  on a non-finite n_names and a pre-clamp explanation mismatch — both fixed before commit.
+
 2026-06-20: **Milestone 6 (validate + polish, DONE) + post-MVP roadmap reset.** Validation confirmed
 the engine/provider are already fail-soft end-to-end across every enumerated edge case (missing/partial
 fundamentals, empty/bad ticker, thin/ZERO volume, all-NaN signal column, single/duplicate-symbol

@@ -23,7 +23,7 @@ import datetime as dt
 import pandas as pd
 import streamlit as st
 
-from screener import display
+from screener import agent, display
 from screener.profiles import PROFILES, get_profile
 from screener.universe import load_universe
 
@@ -61,6 +61,52 @@ except Exception as exc:  # noqa: BLE001 - show the failure in the UI, not a tra
     st.error(f"Could not load the ticker universe: {exc}")
     st.stop()
 
+# Engine-independent full-universe sectors — computed ONCE so the natural-language
+# agent can canonicalize sector names before any scan exists.
+universe_sectors = sorted(universe["sector"].dropna().unique().tolist())
+
+
+# --- natural-language agent: staging + pending-apply ---------------------
+# THE CRUX of wiring the NL output into the existing keyed widgets WITHOUT the
+# Streamlit "created with a default value but also had its value set via Session
+# State API" warning, and WITHOUT breaking the cold-scan guard. Two pieces:
+#
+# (1) _stage_nl_request writes _pending_* keys (consumed at the top of the NEXT
+#     run, before the widgets are created) and sets _nl_run_after_apply, which the
+#     single scan block pops to fire the engine exactly once after an Interpret.
+# (2) The pending-apply loop below pops each _pending_* into its widget key BEFORE
+#     any widget with that key is instantiated this run, so the widgets render with
+#     the NL-chosen values and Streamlit reads them from session_state (no warning).
+def _stage_nl_request(req: agent.ScreenRequest) -> None:
+    """Stage an interpreted request into _pending_* keys for the next run."""
+    st.session_state["_pending_profile_name"] = req.profile
+    st.session_state["_pending_n_names"] = req.n_names
+    st.session_state["_pending_f_text"] = req.text
+    st.session_state["_pending_f_sectors"] = list(req.sectors)
+    st.session_state["_pending_f_min_score"] = float(req.min_score)
+    st.session_state["_pending_f_earnings_only"] = bool(req.earnings_only)
+    st.session_state["nl_last_req"] = req
+    st.session_state["_nl_run_after_apply"] = True
+
+
+_PENDING = {
+    "_pending_profile_name": "profile_name",
+    "_pending_n_names": "n_names",
+    "_pending_f_text": "f_text",
+    "_pending_f_sectors": "f_sectors",
+    "_pending_f_min_score": "f_min_score",
+    "_pending_f_earnings_only": "f_earnings_only",
+}
+for _pend_key, _widget_key in _PENDING.items():
+    if _pend_key in st.session_state:
+        st.session_state[_widget_key] = st.session_state.pop(_pend_key)
+# Keep a staged n_names within the live slider's range so rendering can't raise on
+# a degenerate small universe (in production at 503 names this never triggers).
+if "n_names" in st.session_state:
+    _smin = min(5, len(universe))
+    _smax = max(_smin, len(universe))
+    st.session_state["n_names"] = max(_smin, min(int(st.session_state["n_names"]), _smax))
+
 
 # --- builder: pure column-config descriptor -> real st.column_config ------
 def _build_column_config(profile) -> dict:
@@ -95,6 +141,24 @@ def _build_column_config(profile) -> dict:
 
 # --- sidebar: controls, filters, disclaimer ------------------------------
 with st.sidebar:
+    # Natural-language box FIRST (above Controls). It is a SECOND trigger into the
+    # single engine call site — never a separate scan path.
+    st.subheader("Ask in plain English")
+    st.text_input(
+        "Describe what to screen for",
+        key="nl_query",
+        placeholder="e.g. top 20 momentum tech names, high conviction",
+    )
+    if agent.agent_available():
+        st.caption("LLM-backed (claude) — interprets your request, then runs the scan.")
+    else:
+        st.caption(
+            "Offline rule-based parser (set ANTHROPIC_API_KEY + install anthropic "
+            "for LLM mode)."
+        )
+    interpret_clicked = st.button("Interpret & run", key="nl_btn")
+    st.divider()
+
     st.header("Controls")
 
     profile_name = st.radio(
@@ -115,18 +179,25 @@ with st.sidebar:
     slider_min = min(5, universe_len)
     slider_max = max(slider_min, universe_len)
     if slider_max > slider_min:
+        # Initialize-then-no-default: seed the key once (so a staged NL value or a
+        # prior selection survives) and pass NO value= arg, the canonical pattern
+        # that avoids Streamlit's default-vs-session_state warning.
+        if "n_names" not in st.session_state:
+            st.session_state["n_names"] = min(25, slider_max)
         n_names = st.slider(
             "Universe size (names to scan)",
             min_value=slider_min,
             max_value=slider_max,
-            value=min(25, slider_max),
             step=5,
             key="n_names",
             help="A cold scan hits Yahoo once per name; start small.",
         )
     else:
-        # Universe too small for a range slider — scan all of it.
+        # Universe too small for a range slider — scan all of it. Mirror into the
+        # session key so the scan block (which reads st.session_state["n_names"])
+        # has a value even though no keyed slider rendered.
         n_names = universe_len
+        st.session_state["n_names"] = universe_len
         st.caption(f"Universe has {universe_len} name(s); scanning all of them.")
     st.caption(display.universe_size_hint(n_names))
 
@@ -141,7 +212,11 @@ with st.sidebar:
         scanned = st.session_state["scan"]["df"]
         st.text_input("Filter symbol / name", key="f_text")
         st.multiselect("Sector", options=display.sector_options(scanned), key="f_sectors")
-        st.slider("Minimum score", 0.0, 1.0, 0.0, 0.01, key="f_min_score")
+        # Initialize-then-no-default (drop the positional 0.0) so a staged NL score
+        # floor is read from session_state without the default-vs-session_state warning.
+        if "f_min_score" not in st.session_state:
+            st.session_state["f_min_score"] = 0.0
+        st.slider("Minimum score", 0.0, 1.0, step=0.01, key="f_min_score")
         if "earnings_in_window" in profile.flags:
             st.checkbox("Only earnings-in-window", key="f_earnings_only")
 
@@ -151,8 +226,34 @@ with st.sidebar:
         st.write(display.DISCLAIMER_DETAIL)
 
 
+# --- natural-language Interpret handler ----------------------------------
+# Phase 1 of the two-phase NL flow: parse the query, STAGE the result into
+# _pending_* keys (+ _nl_run_after_apply), then rerun so the top-of-script
+# pending-apply seeds the widget keys BEFORE the widgets render next pass. The
+# engine is NOT called here — the scan fires in phase 2 below.
+if interpret_clicked:
+    req = agent.parse_query(
+        st.session_state.get("nl_query", ""),
+        universe_sectors=universe_sectors,
+    )
+    _stage_nl_request(req)
+    st.rerun()
+
+
 # --- run handler: the ONLY engine call site ------------------------------
-if run_clicked:
+# Fires on (Run scan) OR (a freshly-applied NL request) — never on a plain rerun.
+# pop() consumes the NL flag so the scan runs exactly once after an Interpret;
+# this IS the cold-scan guard, generalized to two explicit actions.
+do_scan = run_clicked or st.session_state.pop("_nl_run_after_apply", False)
+if do_scan:
+    if run_clicked:
+        # A manual Run scan supersedes any prior NL interpretation — drop the
+        # stale banner so it can't describe a scan the user didn't ask for in
+        # natural language.
+        st.session_state.pop("nl_last_req", None)
+    # Read from the widget keys, already reconciled with any staged NL values.
+    profile_name = st.session_state["profile_name"]
+    n_names = st.session_state["n_names"]
     cache_day = dt.date.today().isoformat()
     with st.spinner(
         f"Scanning {n_names} names — the first run of the day hits Yahoo "
@@ -285,6 +386,20 @@ def _render_results(
         },
     )
     st.caption(display.contribution_caption(reasons, float(row["score"])))
+
+
+# --- NL transparency: show how the last request was interpreted ----------
+# Above the four-state switch so the user always sees the interpretation that
+# drove the current scan (the explanation + the resolved knobs).
+last = st.session_state.get("nl_last_req")
+if last is not None:
+    st.info(f"Interpreted your request — {last.explanation}")
+    st.caption(
+        f"profile={last.profile} · names={last.n_names} · min_score={last.min_score:g}"
+        + (f" · sectors={', '.join(last.sectors)}" if last.sectors else "")
+        + (f" · symbol={last.text}" if last.text else "")
+        + (" · earnings-only" if last.earnings_only else "")
+    )
 
 
 # State switch.

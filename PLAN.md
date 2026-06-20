@@ -73,10 +73,12 @@ scope before writing code in each. Check each milestone's output against `spec.m
 ---
 
 ## Post-MVP (priority order, set 2026-06-20)
-- **Natural-language agent layer** (NEXT) — plain English → screen params → `run_screen`.
-  Offline-first: Anthropic Claude when `ANTHROPIC_API_KEY` is set, else a deterministic
-  rule-based parser; the engine stays the source of truth (a layer on top, not a replacement).
-- **Chart-pattern technical analysis** — descriptive detection of common shapes (wedges,
+- **Natural-language agent layer** ✅ DONE — plain English → validated screen params → `run_screen`.
+  `screener/agent.py` (pure; anthropic lazy-imported) + `tests/test_agent.py` (20 offline tests) + a sidebar
+  "Interpret & run" box. Offline-first: Anthropic Claude (`claude-opus-4-8`, strict forced tool use) when
+  `ANTHROPIC_API_KEY` is set, else a deterministic rule-based parser; one `validate_request` safety layer clamps
+  every result, so the engine stays the source of truth (a layer on top, not a replacement). See DECISIONS.md.
+- **Chart-pattern technical analysis** (NEXT) — descriptive detection of common shapes (wedges,
   head & shoulders, cup & handle, triangles, double top/bottom, flags) via swing-pivot +
   geometric rules; a per-ticker readout, never a buy/sell call. **EOD timeframes only —
   1w / 1d / 1mo** (resampled from the daily bars); NO intraday/4h, to keep the end-of-day

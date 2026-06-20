@@ -58,6 +58,21 @@ The screener **fails soft**: a ticker that Yahoo can't serve, a recent IPO with
 too little history, or a thin/zero-volume name yields blank/neutral signals and
 is simply ranked or filtered accordingly — it never crashes a full run.
 
+## Ask in plain English
+
+The sidebar's **Ask in plain English** box turns a request like *"top 20 momentum
+tech names, high conviction"* into screen parameters and runs the scan. It maps your
+words onto the same knobs the manual controls expose (profile, universe size, sector,
+score floor, symbol, the swing earnings toggle) and shows a one-line note of how it
+read you — nothing is a black box. The deterministic engine still does the actual
+ranking; the agent only fills in the form, and every value is clamped to a safe range.
+
+By default it uses an **offline rule-based parser** (no setup, no network). For richer
+interpretation, set `ANTHROPIC_API_KEY` and install the optional `anthropic` package
+(`pip install anthropic`); it then uses Claude (`claude-opus-4-8`, overridable via
+`SCREENER_AGENT_MODEL`). With no key it silently stays on the rule-based parser, and it
+never gives buy/sell advice — it only translates your request into a screen.
+
 ## The three profiles
 
 A profile is a **config**, not code: a set of **hard filters** (cutoffs a name
@@ -184,11 +199,11 @@ For the bigger picture, read **[CLAUDE.md](CLAUDE.md)** (project brief),
 
 ### Roadmap (post-v1)
 
-Equities only in v1. Next up (post-MVP): a **natural-language agent layer** over
-the deterministic engine (plain English → screen parameters → the same ranker),
-then **descriptive chart-pattern detection** (wedges, head & shoulders, cup &
-handle, …) on end-of-day timeframes (1w / 1d / 1mo). A live crypto pipeline is on
-hold. **v3** is a gated ML research track — a backtest harness first, then a model
-that enters only as one more *signal* feeding the percentile ranker, never as the
-ranking engine itself. The tool stays descriptive: it ranks and describes, it does
-not advise.
+Equities only in v1. The **natural-language "Interpret & run" box** ships (offline
+rule-based parsing, or Claude when `ANTHROPIC_API_KEY` is set) as a layer over the
+deterministic engine — see *Ask in plain English* above. Next up: **descriptive
+chart-pattern detection** (wedges, head & shoulders, cup & handle, …) on end-of-day
+timeframes (1w / 1d / 1mo). A live crypto pipeline is on hold. **v3** is a gated ML
+research track — a backtest harness first, then a model that enters only as one more
+*signal* feeding the percentile ranker, never as the ranking engine itself. The tool
+stays descriptive: it ranks and describes, it does not advise.
