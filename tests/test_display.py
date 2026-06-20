@@ -318,7 +318,11 @@ def test_table_view_columns_per_profile():
     lt = _long_term_profile()
     lt_df = _result_frame()
     lt_view = display.table_view(lt_df, lt)
-    assert list(lt_view.columns)[:5] == ["rank", "symbol", "name", "sector", "score"]
+    # `fit` (0..100) takes the visible score slot; the raw `score` column is dropped.
+    assert list(lt_view.columns)[:5] == ["rank", "symbol", "name", "sector", "fit"]
+    assert "score" not in lt_view.columns
+    # The per-row narrative is the LAST column.
+    assert lt_view.columns[-1] == "why"
     assert "reasons" not in lt_view.columns
     assert not any(c.endswith("_pct") for c in lt_view.columns)
 
@@ -397,16 +401,19 @@ def test_link_url_builders_and_class_shares():
     assert display.yahoo_url("aapl") == "https://finance.yahoo.com/quote/AAPL"
 
 
-def test_column_order_inserts_links_after_score():
+def test_column_order_inserts_fit_and_links_after_identity():
     mom = _momentum_profile()
     order = display.column_order(mom, _result_frame())
-    # The two link columns sit immediately after the identity/score block.
-    assert order[:7] == ["rank", "symbol", "name", "sector", "score", "tv_url", "yf_url"]
-    # ...and before any signal column.
+    # `fit` takes the visible score slot, then the two link columns, then signals.
+    assert order[:7] == ["rank", "symbol", "name", "sector", "fit", "tv_url", "yf_url"]
     assert order.index("tv_url") < order.index("momentum_3m")
-    # Gate: a frame with no `symbol` column omits them (never a KeyError).
+    # The synthetic narrative column is LAST.
+    assert order[-1] == "why"
+    # Gate: a frame with no `symbol` column omits the links (never a KeyError)...
     no_sym = pd.DataFrame({"score": [0.5], "rank": [1]})
     assert "tv_url" not in display.column_order(mom, no_sym)
+    # ...but `fit` is still present (it derives from `score`).
+    assert "fit" in display.column_order(mom, no_sym)
 
 
 def test_table_view_carries_link_columns():
@@ -529,7 +536,7 @@ def test_feature_description_accessor():
 
 def test_help_constants_present():
     for txt in (display.SCORE_HELP, display.PERCENTILE_HELP,
-                display.CONTRIBUTION_HELP, display.WHAT_HELP):
+                display.CONTRIBUTION_HELP, display.WHAT_HELP, display.WHY_HELP):
         assert isinstance(txt, str) and txt.strip()
 
 
@@ -616,6 +623,117 @@ def test_column_config_spec_carries_help():
     # Each signal column gets its description as a header tooltip.
     for s in sw.signals:
         assert spec[s.feature]["help"] == display.feature_description(s.feature)
+
+
+# =========================================================================
+# "surface what we compute": fit_score / narrative / radar / export_frame
+# =========================================================================
+def test_fit_score():
+    assert display.fit_score(0.0) == 0
+    assert display.fit_score(1.0) == 100
+    assert display.fit_score(0.719) == 72       # rounds to nearest
+    assert display.fit_score(0.5) == 50
+    # Clamped + fail-soft (never raises, never outside 0..100).
+    assert display.fit_score(1.5) == 100
+    assert display.fit_score(-0.2) == 0
+    assert display.fit_score(None) == 0
+    assert display.fit_score(float("nan")) == 0
+    assert display.fit_score(np.float64(0.8)) == 80
+
+
+def test_narrative_capitalizes_and_stands_alone():
+    p = Profile("t", "T",
+                signals=(SignalSpec("revenue_growth", 1.0), SignalSpec("earnings_growth", 1.0),
+                         SignalSpec("momentum_12m", 1.0)))
+    reasons = OrderedDict()
+    reasons["revenue_growth"] = {"value": 0.2, "percentile": 0.90, "contribution": 0.3}
+    reasons["earnings_growth"] = {"value": 0.3, "percentile": 1.00, "contribution": 0.33}
+    reasons["momentum_12m"] = {"value": 0.1, "percentile": 0.20, "contribution": 0.07}
+    # Capitalized, full-stopped, no rank/symbol head; same strongest/weakest read
+    # as explain_rank (which is now factored on top of the shared clause).
+    assert display.narrative(reasons) == (
+        "Strongest on Earnings Growth and Revenue Growth, weakest on 12M Momentum."
+    )
+    # Empty / None reasons -> "".
+    assert display.narrative(OrderedDict()) == ""
+    assert display.narrative(None) == ""
+
+
+def test_narrative_series_over_frame():
+    p = _momentum_profile()
+    reasons = _reasons(p)  # all-0.5 percentiles -> a non-empty clause
+    df = pd.DataFrame({"symbol": ["AAA", "BBB"], "reasons": [reasons, OrderedDict()]})
+    s = display.narrative_series(df, p)
+    assert len(s) == 2 and list(s.index) == [0, 1]
+    assert s.iloc[0].startswith("Strongest on")
+    assert s.iloc[1] == ""                       # empty reasons -> ""
+    # No reasons column -> all-empty series of the right length.
+    no_r = pd.DataFrame({"symbol": ["X", "Y", "Z"]})
+    assert list(display.narrative_series(no_r, p)) == ["", "", ""]
+    # Empty frame -> empty series.
+    assert len(display.narrative_series(pd.DataFrame(), p)) == 0
+
+
+def test_radar_spec_axes_match_reasons():
+    p = _momentum_profile()
+    pcts = {s.feature: (i + 1) / len(p.signals) for i, s in enumerate(p.signals)}
+    spec = display.radar_spec(_reasons(p, pcts=pcts), p)
+    # One axis per scored signal, in reasons order; short labels; percentile values.
+    assert len(spec["labels"]) == len(p.signals)
+    assert len(spec["values"]) == len(p.signals)
+    assert spec["labels"][0] == display.radar_label(p.signals[0].feature)
+    assert math.isclose(spec["values"][-1], 1.0)
+    # A missing percentile -> the neutral 0.5 (engine's missing-signal default).
+    r2 = OrderedDict()
+    r2["momentum_3m"] = {"value": 0.1, "percentile": None, "contribution": 0.0}
+    assert math.isclose(display.radar_spec(r2)["values"][0], 0.5)
+
+
+def test_radar_svg_structure():
+    p = _momentum_profile()
+    n = len(p.signals)
+    svg = display.radar_svg(display.radar_spec(_reasons(p), p))
+    assert svg.startswith("<svg") and svg.rstrip().endswith("</svg>")
+    # One vertex circle per axis; 4 grid rings + 1 data polygon.
+    assert svg.count("<circle") == n
+    assert svg.count("<polygon") == 5
+    # A short axis label is rendered (momentum screens on relative volume).
+    assert "Rel Vol" in svg
+    # Empty / malformed spec -> "" (the caller then renders nothing).
+    assert display.radar_svg({"labels": [], "values": []}) == ""
+    assert display.radar_svg({"labels": ["a"], "values": []}) == ""
+
+
+def test_radar_label_short_and_fallback():
+    assert display.radar_label("momentum_12m") == "12M Mom"
+    assert display.radar_label("rel_volume_20") == "Rel Vol"
+    # Unmapped feature -> the full feature_label.
+    assert display.radar_label("trailing_pe") == display.feature_label("trailing_pe")
+
+
+def test_export_frame_drops_links_keeps_fit_and_why():
+    p = _momentum_profile()
+    df = _result_frame()                         # AAPL/MSFT/NVDA, scores .80/.55/.30
+    df["reasons"] = [_reasons(p), _reasons(p), _reasons(p)]
+    exp = display.export_frame(df, p)
+    assert "tv_url" not in exp.columns and "yf_url" not in exp.columns
+    assert "fit" in exp.columns and "why" in exp.columns
+    assert "reasons" not in exp.columns
+    # Fit is the 0..100 integer headline (round(score * 100)).
+    assert list(exp["fit"]) == [80, 55, 30]
+    assert exp["why"].iloc[0].startswith("Strongest on")
+
+
+def test_column_config_spec_fit_and_why_descriptors():
+    spec = display.column_config_spec(_momentum_profile())
+    # `score` descriptor retained (0..1 progress) AND a new 0..100 `fit` progress.
+    assert spec["score"]["kind"] == "progress" and math.isclose(spec["score"]["max"], 1.0)
+    assert spec["fit"]["kind"] == "progress"
+    assert math.isclose(spec["fit"]["min"], 0.0) and math.isclose(spec["fit"]["max"], 100.0)
+    assert spec["fit"]["format"] == "%d" and spec["fit"]["label"] == "Fit"
+    # The narrative column is a text column with a non-empty header tooltip.
+    assert spec["why"]["kind"] == "text" and spec["why"]["label"] == "Why"
+    assert spec["why"]["help"].strip()
 
 
 # =========================================================================

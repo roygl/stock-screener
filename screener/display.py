@@ -135,6 +135,10 @@ CONTRIBUTION_HELP = (
     "The rows sum to the Score."
 )
 WHAT_HELP = "What each signal measures, and which direction ranks better."
+WHY_HELP = (
+    "Plain-English read of where this name is strongest and weakest versus the "
+    "scan (its top signals by percentile). Descriptive only — not advice."
+)
 
 # --- tactical-readout help copy (support/resistance, overextension, buy zone) -
 # Three NON-advisory captions for the per-ticker detail panel. LEVELS_HELP and
@@ -205,8 +209,10 @@ _PERCENT2_FEATURES = frozenset({"extension_score"})
 # Signed-percent fractions: a leading "+"/"-" matters (gap above vs below a band).
 _SIGNED_PERCENT_FEATURES = frozenset({"dist_to_buy_zone_pct"})
 
-# The leading, human-ordered columns shown before a profile's own signals.
-_LEAD_VISIBLE = ("rank", "symbol", "name", "sector", "score")
+# The leading, human-ordered columns shown before a profile's own signals. The
+# synthetic ``fit`` (0..100, derived from ``score``) is inserted right after these,
+# taking the visible score slot; the raw ``score`` stays in the frame for filtering.
+_LEAD_VISIBLE = ("rank", "symbol", "name", "sector")
 
 _MISSING = "—"
 
@@ -238,6 +244,25 @@ def feature_description(feature: str) -> str:
 def profile_description(name: str) -> str:
     """One-line description for a profile by ``Profile.name`` (``""`` if unknown)."""
     return PROFILE_DESCRIPTIONS.get(name, "")
+
+
+def fit_score(score) -> int:
+    """The 0..1 ``score`` as a 0..100 integer "fit" number (rounded, clamped).
+
+    The headline metric the table and the detail panel lead with — it reads as a
+    plain "fit out of 100" instead of a ``0.xxx`` fraction (the same composite the
+    paid tools surface as their signature number). Fail-soft: a missing /
+    non-finite score becomes ``0`` (never raises).
+    """
+    if _is_missing(score):
+        return 0
+    try:
+        v = float(score)
+    except (TypeError, ValueError):
+        return 0
+    if not np.isfinite(v):
+        return 0
+    return int(round(max(0.0, min(1.0, v)) * 100))
 
 
 # --- universe-size guard -------------------------------------------------
@@ -399,7 +424,7 @@ def apply_filters(
 # jump straight out to a chart/quote. Equities-only and no exchange field in the
 # model — both sites resolve bare US large-cap symbols. Class shares differ by
 # separator: yfinance/Yahoo use "-" (BRK-B), TradingView uses "." (BRK.B).
-_LINK_COLUMNS = ("tv_url", "yf_url")  # inserted right after `score` in column_order
+_LINK_COLUMNS = ("tv_url", "yf_url")  # inserted right after the `fit` column in column_order
 
 
 def tradingview_url(symbol: str) -> str:
@@ -413,16 +438,26 @@ def yahoo_url(symbol: str) -> str:
     return f"https://finance.yahoo.com/quote/{quote(str(symbol).strip().upper())}"
 
 
-def _with_link_columns(df: pd.DataFrame) -> pd.DataFrame:
-    """Return a copy of ``df`` with ``tv_url``/``yf_url`` derived from ``symbol``.
+def _with_derived_columns(df: pd.DataFrame, profile=None) -> pd.DataFrame:
+    """Return a copy of ``df`` with the synthetic display-only columns added.
 
-    Fail-soft: a frame with no ``symbol`` column is returned unchanged, so
-    :func:`table_view` can never raise on a degenerate frame.
+    - ``tv_url`` / ``yf_url`` (per-ticker external links) derived from ``symbol``;
+    - ``fit`` (0..100 headline number) derived from ``score`` via :func:`fit_score`;
+    - ``why`` (per-row plain-English narrative) derived from ``reasons`` when a
+      ``profile`` is given, via :func:`narrative_series`.
+
+    Fail-soft: each column is added only when its source column is present, so a
+    degenerate frame (no ``symbol`` / ``score`` / ``reasons``) is returned without
+    that column and :func:`table_view` can never raise.
     """
     out = df.copy()
     if "symbol" in out.columns:
         out["tv_url"] = out["symbol"].map(tradingview_url)
         out["yf_url"] = out["symbol"].map(yahoo_url)
+    if "score" in out.columns:
+        out["fit"] = out["score"].map(fit_score)
+    if profile is not None and "reasons" in out.columns:
+        out["why"] = narrative_series(out, profile)
     return out
 
 
@@ -430,20 +465,26 @@ def _with_link_columns(df: pd.DataFrame) -> pd.DataFrame:
 def column_order(profile: Profile, df: pd.DataFrame) -> "list[str]":
     """Ordered visible-column names for the results table.
 
-    Lead columns (``rank, symbol, name, sector, score``), then the two synthetic
-    per-ticker link columns (``tv_url``, ``yf_url``), then the profile's RAW
-    signal feature columns (intersected with ``df`` so a missing column is just
-    skipped, never a KeyError), then — SWING ONLY (flag gate + column present) —
-    ``earnings_in_window`` and ``days_to_earnings``. NEVER includes ``reasons``
-    or any ``*_pct`` percentile column (those are Arrow-noisy / internal). This
-    is the single source of truth for both :func:`table_view` and the
-    ``column_order=`` arg passed to ``st.dataframe``.
+    Lead columns (``rank, symbol, name, sector``), then the synthetic ``fit``
+    (0..100, taking the visible score slot), then the two synthetic per-ticker
+    link columns (``tv_url``, ``yf_url``), then the profile's RAW signal feature
+    columns (intersected with ``df`` so a missing column is just skipped, never a
+    KeyError), then — SWING ONLY (flag gate + column present) —
+    ``earnings_in_window`` and ``days_to_earnings``, and finally the synthetic
+    ``why`` narrative column LAST. NEVER includes ``reasons`` or any ``*_pct``
+    percentile column (those are Arrow-noisy / internal). This is the single
+    source of truth for both :func:`table_view` and the ``column_order=`` arg
+    passed to the grid.
     """
     cols = [c for c in _LEAD_VISIBLE if df is None or c in df.columns]
 
-    # Per-ticker external-link columns sit right after the identity/score block
-    # (before the signals). Synthesised from `symbol`, so gate on it; table_view
-    # augments the frame with these columns before selecting.
+    # Synthetic `fit` (from `score`) takes the visible score slot, right after the
+    # identity block; table_view augments the frame with it before selecting.
+    if (df is None or "score" in df.columns) and "fit" not in cols:
+        cols.append("fit")
+
+    # Per-ticker external-link columns sit right after the fit/identity block
+    # (before the signals). Synthesised from `symbol`, so gate on it.
     if df is None or "symbol" in df.columns:
         cols += [c for c in _LINK_COLUMNS if c not in cols]
 
@@ -461,6 +502,12 @@ def column_order(profile: Profile, df: pd.DataFrame) -> "list[str]":
             if extra not in seen and (df is None or extra in df.columns):
                 cols.append(extra)
                 seen.add(extra)
+
+    # Synthetic per-row narrative LAST (from `reasons`); kept at the end so the
+    # long text never crowds the numeric columns.
+    if (df is None or "reasons" in df.columns) and "why" not in seen:
+        cols.append("why")
+        seen.add("why")
     return cols
 
 
@@ -474,7 +521,7 @@ def table_view(df: pd.DataFrame, profile: Profile) -> pd.DataFrame:
     intersection without raising.
     """
     order = column_order(profile, df)
-    src = _with_link_columns(df) if df is not None else df
+    src = _with_derived_columns(df, profile) if df is not None else df
     cols = [c for c in order if df is not None and c in src.columns]
     return src[cols].copy()
 
@@ -497,6 +544,10 @@ def column_config_spec(profile: Profile) -> "dict[str, dict]":
         "sector": {"kind": "text", "label": "Sector"},
         "score": {"kind": "progress", "label": "Score", "format": "%.3f", "min": 0.0, "max": 1.0,
                   "help": SCORE_HELP},
+        # The headline 0..100 "fit" number that takes the visible score slot (the
+        # raw ``score`` descriptor is kept above for the filters / any future use).
+        "fit": {"kind": "progress", "label": "Fit", "format": "%d", "min": 0.0, "max": 100.0,
+                "help": SCORE_HELP},
         # Per-ticker jump-out links (icon-first: a single "↗"; the header + the
         # hovered URL name the destination). Equities-only, opens in a new tab.
         "tv_url": {"kind": "link", "label": "TradingView", "display_text": "↗",
@@ -535,6 +586,8 @@ def column_config_spec(profile: Profile) -> "dict[str, dict]":
         spec["earnings_in_window"] = {"kind": "checkbox", "label": "Earnings ≤7d"}
         spec["days_to_earnings"] = {"kind": "number", "label": "Days To Earnings", "format": "%d"}
 
+    # The synthetic per-row narrative column (plain-English strengths/weaknesses).
+    spec["why"] = {"kind": "text", "label": "Why", "help": WHY_HELP}
     # Universe-wide tactical-readout columns (present for every profile). The
     # Extension cell renders as text (app.py colours the badge via
     # extension_state_color); In Buy Zone is a checkbox like the earnings flags.
@@ -845,6 +898,31 @@ def contribution_caption(reasons, score: float) -> str:
     return f"Signal contributions sum to the score ({total:.3f} ≈ {score_val:.3f})"
 
 
+def _highlight_clause(reasons) -> str:
+    """The "strongest on … (weakest on …)" clause for a row's ``reasons``.
+
+    Ranks the signals by **percentile** (where the name genuinely sits versus the
+    scan), names the top 1–2 and — when distinct — the single weakest. Lowercase,
+    no leading subject/period, so both :func:`explain_rank` (which prepends a head)
+    and :func:`narrative` (which capitalizes it) can reuse it. ``""`` when there is
+    no scored signal. Purely descriptive — never advice.
+    """
+    scored = [
+        (feat, float(entry.get("percentile")))
+        for feat, entry in _signal_items(reasons)
+        if not _is_missing(entry.get("percentile"))
+    ]
+    if not scored:
+        return ""
+    by_pct = sorted(scored, key=lambda kv: kv[1], reverse=True)
+    top = by_pct[: min(2, len(by_pct))]
+    clause = "strongest on " + " and ".join(feature_label(f) for f, _ in top)
+    weak_feat = by_pct[-1][0]
+    if weak_feat not in {f for f, _ in top}:
+        clause += f", weakest on {feature_label(weak_feat)}"
+    return clause
+
+
 def explain_rank(row, reasons, profile=None, total=None) -> str:
     """One descriptive sentence: why this row ranks where it does.
 
@@ -866,22 +944,41 @@ def explain_rank(row, reasons, profile=None, total=None) -> str:
         if total:
             head += f" of {int(total)}"
 
-    scored = [
-        (feat, float(entry.get("percentile")))
-        for feat, entry in _signal_items(reasons)
-        if not _is_missing(entry.get("percentile"))
-    ]
-    if not scored:
+    clause = _highlight_clause(reasons)
+    if not clause:
         # No signal detail — only worth a line if we at least have a rank.
         return f"{head}." if not _is_missing(rank) else ""
-
-    by_pct = sorted(scored, key=lambda kv: kv[1], reverse=True)
-    top = by_pct[: min(2, len(by_pct))]
-    clause = "strongest on " + " and ".join(feature_label(f) for f, _ in top)
-    weak_feat = by_pct[-1][0]
-    if weak_feat not in {f for f, _ in top}:
-        clause += f", weakest on {feature_label(weak_feat)}"
     return f"{head} — {clause}."
+
+
+def narrative(reasons) -> str:
+    """A standalone per-row "why" phrase from ``reasons`` (``""`` when none).
+
+    The same strongest/weakest read as :func:`explain_rank` but WITHOUT the
+    rank/symbol head — capitalized and full-stopped so it stands alone in a table
+    cell (e.g. ``"Strongest on Earnings Growth and Revenue Growth, weakest on 12M
+    Momentum."``). Descriptive only — never advice.
+    """
+    clause = _highlight_clause(reasons)
+    if not clause:
+        return ""
+    return f"{clause[:1].upper()}{clause[1:]}."
+
+
+def narrative_series(df: pd.DataFrame, profile=None) -> pd.Series:
+    """Vectorized :func:`narrative` over a frame's ``reasons`` column.
+
+    Returns an all-empty-string Series (indexed like ``df``) when ``reasons`` is
+    absent. ``profile`` is accepted for signature symmetry but unused (the
+    narrative reads only the per-row ``reasons``).
+    """
+    if df is None or len(df) == 0:
+        return pd.Series([], dtype="object")
+    if "reasons" not in df.columns:
+        return pd.Series([""] * len(df), index=df.index, dtype="object")
+    return pd.Series(
+        [narrative(r) for r in df["reasons"]], index=df.index, dtype="object"
+    )
 
 
 def signal_glossary(profile: Profile) -> "list[tuple[str, str]]":
@@ -895,6 +992,147 @@ def signal_glossary(profile: Profile) -> "list[tuple[str, str]]":
     return [
         (feature_label(s.feature), feature_description(s.feature)) for s in profile.signals
     ]
+
+
+# --- signal radar (pure SVG snowflake) -----------------------------------
+# Short axis labels so the radar's spokes don't overlap; anything unmapped falls
+# back to the full feature_label.
+_RADAR_SHORT_LABELS: "dict[str, str]" = {
+    "momentum_1m": "1M Mom",
+    "momentum_3m": "3M Mom",
+    "momentum_6m": "6M Mom",
+    "momentum_12m": "12M Mom",
+    "sma_stacked_20_50_150": "Trend",
+    "dist_52w_high": "Dist 52wH",
+    "forward_pe": "Fwd P/E",
+    "revenue_growth": "Rev Grw",
+    "earnings_growth": "Earn Grw",
+    "ema_5_9_cross_score": "5/9 EMA",
+    "rel_volume_20": "Rel Vol",
+    "macd_hist": "MACD",
+    "rsi_health": "RSI Health",
+    "pullback_quality": "Pullback",
+    "sector_strength_score": "Sector",
+}
+
+
+def radar_label(feature: str) -> str:
+    """Short axis label for the radar (full :func:`feature_label` fallback)."""
+    return _RADAR_SHORT_LABELS.get(feature, feature_label(feature))
+
+
+def _svg_escape(s) -> str:
+    """Minimal XML-text escaping for a label rendered inside an SVG ``<text>``."""
+    return str(s).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+def radar_spec(reasons, profile=None) -> "dict[str, list]":
+    """One radar axis per scored signal: ``{"labels": [...], "values": [...]}``.
+
+    ``values`` are each signal's **percentile** (0..1, where the name sits versus
+    the scan) in the ``reasons`` order — the same data the reasons table shows, so
+    the radar is a visual TL;DR of it. A missing / non-finite percentile becomes
+    the neutral ``0.5`` (matching the engine's missing-signal default). ``profile``
+    is accepted for symmetry but unused (the axes come from ``reasons``).
+    """
+    labels: "list[str]" = []
+    values: "list[float]" = []
+    for feat, entry in _signal_items(reasons):
+        pct = entry.get("percentile")
+        labels.append(radar_label(feat))
+        if _is_missing(pct):
+            values.append(0.5)
+            continue
+        try:
+            v = float(pct)
+        except (TypeError, ValueError):
+            v = 0.5
+        if not np.isfinite(v):
+            v = 0.5
+        values.append(max(0.0, min(1.0, v)))
+    return {"labels": labels, "values": values}
+
+
+def radar_svg(spec, size: int = 320) -> str:
+    """A self-contained SVG radar (snowflake) string for a :func:`radar_spec`.
+
+    Pure string output (NO streamlit) — ``app.py`` drops it into an iframe via
+    ``st.components.v1.html``. Uses explicit, theme-robust colours (mid-gray
+    structure/labels, a blue accent for the data polygon) since that iframe does
+    not inherit Streamlit's theme. Returns ``""`` for an empty / malformed spec or
+    a non-positive radius (so the caller renders nothing).
+    """
+    labels = list(spec.get("labels", [])) if spec else []
+    values = list(spec.get("values", [])) if spec else []
+    n = len(labels)
+    if n == 0 or n != len(values):
+        return ""
+    cx = cy = size / 2.0
+    radius = (size / 2.0) - 60.0
+    if radius <= 0:
+        return ""
+
+    def _pt(frac, i):
+        ang = -math.pi / 2.0 + 2.0 * math.pi * (i / n)
+        r = radius * frac
+        return (cx + r * math.cos(ang), cy + r * math.sin(ang))
+
+    parts = [
+        '<svg xmlns="http://www.w3.org/2000/svg" '
+        f'viewBox="0 0 {size} {size}" width="{size}" height="{size}" role="img" '
+        'aria-label="Signal radar: each axis is a signal; further from the centre '
+        'means a higher percentile versus the scan.">'
+    ]
+    # Concentric grid rings.
+    for frac in (0.25, 0.5, 0.75, 1.0):
+        pts = " ".join(f"{x:.1f},{y:.1f}" for x, y in (_pt(frac, i) for i in range(n)))
+        parts.append(
+            f'<polygon points="{pts}" fill="none" stroke="#9aa0a6" '
+            'stroke-opacity="0.4" stroke-width="1"/>'
+        )
+    # Spokes + axis labels.
+    for i, label in enumerate(labels):
+        ex, ey = _pt(1.0, i)
+        parts.append(
+            f'<line x1="{cx:.1f}" y1="{cy:.1f}" x2="{ex:.1f}" y2="{ey:.1f}" '
+            'stroke="#9aa0a6" stroke-opacity="0.4" stroke-width="1"/>'
+        )
+        lx, ly = _pt(1.15, i)
+        anchor = "middle"
+        if lx > cx + 1.0:
+            anchor = "start"
+        elif lx < cx - 1.0:
+            anchor = "end"
+        parts.append(
+            f'<text x="{lx:.1f}" y="{ly:.1f}" text-anchor="{anchor}" '
+            'dominant-baseline="middle" font-size="11" font-family="sans-serif" '
+            f'fill="#80868b">{_svg_escape(label)}</text>'
+        )
+    # Data polygon + vertices.
+    dpts = " ".join(f"{x:.1f},{y:.1f}" for x, y in (_pt(values[i], i) for i in range(n)))
+    parts.append(
+        f'<polygon points="{dpts}" fill="#4c8bf5" fill-opacity="0.3" '
+        'stroke="#4c8bf5" stroke-width="2"/>'
+    )
+    for i in range(n):
+        x, y = _pt(values[i], i)
+        parts.append(f'<circle cx="{x:.1f}" cy="{y:.1f}" r="2.5" fill="#4c8bf5"/>')
+    parts.append("</svg>")
+    return "".join(parts)
+
+
+def export_frame(df: pd.DataFrame, profile: Profile) -> pd.DataFrame:
+    """A human-readable frame for CSV download (no link-URL / internal columns).
+
+    Reuses :func:`table_view` (so it carries ``fit``, the profile's signals, any
+    swing earnings columns, and the ``why`` narrative) and drops the ``tv_url`` /
+    ``yf_url`` link columns — leaving exactly what the user sees, numbers kept raw
+    for downstream analysis. Fail-soft on a degenerate frame (returns the
+    intersection without raising).
+    """
+    view = table_view(df, profile)
+    drop = [c for c in _LINK_COLUMNS if c in view.columns]
+    return view.drop(columns=drop) if drop else view
 
 
 # --- earnings badge / summary -------------------------------------------
