@@ -19,6 +19,7 @@ Run locally:
 from __future__ import annotations
 
 import datetime as dt
+import os
 
 import pandas as pd
 import streamlit as st
@@ -31,6 +32,30 @@ from screener.profiles import PROFILES, get_profile
 from screener.universe import load_universe
 
 st.set_page_config(page_title="Stock Screener", page_icon="📈", layout="wide")
+
+
+# --- secrets -> env bridge -----------------------------------------------
+# The agent reads API keys from os.environ. When the app is launched OUTSIDE the
+# interactive shell that exported the key (e.g. Streamlit Cloud, a desktop click,
+# or a plain `streamlit run`), that key is invisible — so the NL search silently
+# used the offline parser. Copy any provider key found in .streamlit/secrets.toml
+# into os.environ ONCE, before anything reads availability, so a secrets.toml works
+# regardless of launch context. Env always wins (we never overwrite a set var), and
+# this is offline-first: no secrets file -> a harmless no-op (no key UI, ever).
+def _bridge_secrets_to_env() -> None:
+    names = {p.env_key for p in agent.PROVIDERS.values() if p.env_key} | {"GOOGLE_API_KEY"}
+    for name in names:
+        if os.environ.get(name):
+            continue
+        try:
+            val = st.secrets.get(name)  # safe even when no secrets.toml exists
+        except Exception:
+            val = None
+        if val:
+            os.environ[name] = str(val)
+
+
+_bridge_secrets_to_env()
 
 
 # --- memoized scan -------------------------------------------------------
@@ -333,20 +358,20 @@ with st.sidebar:
     )
     selected = st.session_state.get("nl_provider", agent.DEFAULT_PROVIDER)
     prov = agent.PROVIDERS[selected]
-    if agent.agent_available(selected):
-        st.caption(
-            f"LLM-backed ({prov.label}) — interprets your request, then runs the scan."
-        )
-    elif prov.env_key:
-        st.caption(
-            f"{prov.label}: set {prov.env_key} + install the SDK for LLM mode "
-            "— using the offline parser."
-        )
+    # Self-diagnosing status: say whether the backend is live and, if not, exactly
+    # WHY (missing key / missing SDK) instead of silently using the offline parser.
+    _ok, _reason = agent.availability_status(selected)
+    if _ok:
+        st.caption(f"✓ LLM-backed ({prov.label}) — interprets your request, then runs the scan.")
     else:
-        st.caption(
-            f"{prov.label}: needs a local Ollama server + the 'openai' package "
-            "— using the offline parser."
-        )
+        # The reason already names the exact missing piece (which key env var, or
+        # the SDK + pip command); the hint adds the non-obvious secrets.toml option.
+        st.caption(f"✗ {prov.label}: {_reason}. Using the offline rule-based parser.")
+        if prov.env_key:
+            st.caption(
+                "Tip: the key can live in your shell env OR `.streamlit/secrets.toml` "
+                "(see `.streamlit/secrets.toml.example`)."
+            )
     interpret_clicked = st.button("Interpret & run", key="nl_btn")
     st.divider()
 
