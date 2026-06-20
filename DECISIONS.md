@@ -4,6 +4,41 @@ Newest first. Each entry: the decision, and *why*, so nothing gets re-argued lat
 
 ---
 
+2026-06-20: **"Clear cache & rescan" now actually clears + rescans, and results name the hard filters that
+narrowed them.** Two fixes prompted by a "rescanning doesn't fetch 500, it stays at 35" report. The 35 was the
+**swing** profile working as designed (only ~35 of 500 clear `rel_volume_20 > 2×` AND `in_leading_sector`); the
+real defects were in the rescan UX:
+- **The button was a no-op-looking lie.** It was `st.button(..., on_click=st.cache_data.clear)`, which (a) only
+  dropped the in-memory `@st.cache_data` memo, leaving cache.py's date-keyed on-disk parquet/JSON untouched — so a
+  same-day rescan re-read identical files — and (b) never triggered a scan at all (`run_clicked` stays False on its
+  rerun). Now it's a captured `clear_clicked` wired as a THIRD trigger into the single engine call site: it
+  `Cache().clear()`s the on-disk cache (forcing a fresh Yahoo fetch) **and** `st.cache_data.clear()`s the memo, then
+  rescans. Kept the one-call-site / cold-scan-guard invariant — no second engine path. Filters intentionally NOT
+  reset on rescan (deferred; the user opted out).
+- **Selectivity was invisible.** Added pure `display.selectivity_hint()` (+ `hard_filter_phrases`/`_filter_phrase`,
+  threshold-synced so a tuned cutoff re-renders) rendered under the context line: "35 of 500 scanned cleared the
+  Swing hard filters (relative volume > 2× and in a top-3 sector by 3-mo return) — … not a data error." So a small
+  match count reads as intended selectivity, not a failed/partial fetch. Offline-tested in `tests/test_display.py`.
+
+2026-06-20: **Per-ticker external chart/quote links (DONE) — one-click jump-out from the results table,
+still descriptive (no advice).** The results table and the inspected-ticker panel now link each symbol out
+to its TradingView chart and Yahoo Finance quote. The non-obvious choices:
+- **Pure + offline, like the rest of `display.py`.** Two URL builders (`tradingview_url`, `yahoo_url` —
+  stdlib `urllib.parse.quote` only) + `_with_link_columns` derive synthetic `tv_url`/`yf_url` columns from
+  `symbol`; they thread through the existing `column_order` → `table_view` → `column_config_spec` seams (a
+  new `kind:"link"` descriptor) and are realised as `st.column_config.LinkColumn` at app.py's single purity
+  boundary. `tests/test_display.py` covers them offline (incl. class shares).
+- **Dedicated link columns, not a linked `symbol` cell.** `symbol` stays the row-select handle that drives
+  the "Why it ranks" panel; turning it into a link would hijack click-to-inspect and allow only one
+  destination. The link columns sit right after `score` (before the signals) and coexist with row selection
+  — clicking a link opens a new tab, clicking elsewhere selects the row.
+- **Icon-first / minimal cells.** Each cell shows a single "↗"; the sticky column header (TradingView /
+  Yahoo) + Streamlit's native URL-on-hover identify the destination (LinkColumn renders text/emoji only, so
+  no inline SVG icon). The detail panel adds short `st.link_button`s (Material icons).
+- **Bare symbol, no exchange map (v1).** No exchange field exists in the model; both sites resolve US
+  large-cap symbols directly. Class shares differ by separator — TradingView swaps `-`→`.` (BRK-B→BRK.B),
+  Yahoo keeps `-`. Exchange-qualified URLs + extra destinations (Finviz/Google Finance) are deferred.
+
 2026-06-20: **Chart-pattern technical analysis (DONE) — a pure, descriptive per-ticker shape READOUT, EOD only.**
 `screener/patterns.py` detects common shapes from price geometry and surfaces them in the inspected-ticker detail
 panel; it describes what the chart shows, it never advises. The non-obvious choices:

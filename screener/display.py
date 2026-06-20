@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import math
 from collections import OrderedDict
+from urllib.parse import quote
 
 import numpy as np
 import pandas as pd
@@ -322,11 +323,44 @@ def apply_filters(
     return df[mask].reset_index(drop=True)
 
 
+# --- per-ticker external links (pure, derived from `symbol`) -------------
+# Synthetic URL columns built from the ticker symbol so the results table can
+# jump straight out to a chart/quote. Equities-only and no exchange field in the
+# model — both sites resolve bare US large-cap symbols. Class shares differ by
+# separator: yfinance/Yahoo use "-" (BRK-B), TradingView uses "." (BRK.B).
+_LINK_COLUMNS = ("tv_url", "yf_url")  # inserted right after `score` in column_order
+
+
+def tradingview_url(symbol: str) -> str:
+    """Interactive TradingView chart URL for ``symbol`` (``-`` -> ``.``)."""
+    sym = str(symbol).strip().upper().replace("-", ".")
+    return f"https://www.tradingview.com/chart/?symbol={quote(sym)}"
+
+
+def yahoo_url(symbol: str) -> str:
+    """Yahoo Finance quote URL for ``symbol`` (bare symbol; Yahoo keeps ``-``)."""
+    return f"https://finance.yahoo.com/quote/{quote(str(symbol).strip().upper())}"
+
+
+def _with_link_columns(df: pd.DataFrame) -> pd.DataFrame:
+    """Return a copy of ``df`` with ``tv_url``/``yf_url`` derived from ``symbol``.
+
+    Fail-soft: a frame with no ``symbol`` column is returned unchanged, so
+    :func:`table_view` can never raise on a degenerate frame.
+    """
+    out = df.copy()
+    if "symbol" in out.columns:
+        out["tv_url"] = out["symbol"].map(tradingview_url)
+        out["yf_url"] = out["symbol"].map(yahoo_url)
+    return out
+
+
 # --- table column selection ---------------------------------------------
 def column_order(profile: Profile, df: pd.DataFrame) -> "list[str]":
     """Ordered visible-column names for the results table.
 
-    Lead columns (``rank, symbol, name, sector, score``) then the profile's RAW
+    Lead columns (``rank, symbol, name, sector, score``), then the two synthetic
+    per-ticker link columns (``tv_url``, ``yf_url``), then the profile's RAW
     signal feature columns (intersected with ``df`` so a missing column is just
     skipped, never a KeyError), then — SWING ONLY (flag gate + column present) —
     ``earnings_in_window`` and ``days_to_earnings``. NEVER includes ``reasons``
@@ -335,6 +369,12 @@ def column_order(profile: Profile, df: pd.DataFrame) -> "list[str]":
     ``column_order=`` arg passed to ``st.dataframe``.
     """
     cols = [c for c in _LEAD_VISIBLE if df is None or c in df.columns]
+
+    # Per-ticker external-link columns sit right after the identity/score block
+    # (before the signals). Synthesised from `symbol`, so gate on it; table_view
+    # augments the frame with these columns before selecting.
+    if df is None or "symbol" in df.columns:
+        cols += [c for c in _LINK_COLUMNS if c not in cols]
 
     seen = set(cols)
     for spec in profile.signals:
@@ -356,14 +396,16 @@ def column_order(profile: Profile, df: pd.DataFrame) -> "list[str]":
 def table_view(df: pd.DataFrame, profile: Profile) -> pd.DataFrame:
     """A NEW frame with only the curated, human-ordered scalar columns.
 
-    Selects exactly :func:`column_order` from ``df`` (so it can never include
-    ``reasons`` or a ``*_pct`` column) and returns a copy. Fail-soft: a result
+    Selects exactly :func:`column_order` from ``df`` — augmented with the
+    synthetic ``tv_url``/``yf_url`` link columns (so it can never include
+    ``reasons`` or a ``*_pct`` column) — and returns a copy. Fail-soft: a result
     frame missing one of the profile's signal columns still returns the
     intersection without raising.
     """
-    cols = column_order(profile, df)
-    cols = [c for c in cols if df is not None and c in df.columns]
-    return df[cols].copy()
+    order = column_order(profile, df)
+    src = _with_link_columns(df) if df is not None else df
+    cols = [c for c in order if df is not None and c in src.columns]
+    return src[cols].copy()
 
 
 def column_config_spec(profile: Profile) -> "dict[str, dict]":
@@ -384,6 +426,12 @@ def column_config_spec(profile: Profile) -> "dict[str, dict]":
         "sector": {"kind": "text", "label": "Sector"},
         "score": {"kind": "progress", "label": "Score", "format": "%.3f", "min": 0.0, "max": 1.0,
                   "help": SCORE_HELP},
+        # Per-ticker jump-out links (icon-first: a single "↗"; the header + the
+        # hovered URL name the destination). Equities-only, opens in a new tab.
+        "tv_url": {"kind": "link", "label": "TradingView", "display_text": "↗",
+                   "help": "Open this ticker's interactive chart on TradingView (new tab)."},
+        "yf_url": {"kind": "link", "label": "Yahoo", "display_text": "↗",
+                   "help": "Open this ticker's Yahoo Finance quote page (new tab)."},
     }
 
     for s in profile.signals:
@@ -721,4 +769,76 @@ def filtered_empty_message(n_total: int) -> str:
     return (
         f"No rows match the current filters — relax them to see all "
         f"{int(n_total)} results."
+    )
+
+
+# --- hard-filter selectivity hint ----------------------------------------
+def _join_clauses(items: "list[str]") -> str:
+    """Join clauses with commas and a trailing "and" (Oxford-style for 3+)."""
+    items = [s for s in items if s]
+    if not items:
+        return ""
+    if len(items) == 1:
+        return items[0]
+    if len(items) == 2:
+        return f"{items[0]} and {items[1]}"
+    return ", ".join(items[:-1]) + f", and {items[-1]}"
+
+
+def _filter_phrase(filt) -> str:
+    """Plain-English clause for one hard :class:`~screener.profiles.Filter`.
+
+    Bespoke phrasing for the features the shipped profiles filter on (so a tuned
+    threshold stays in sync — e.g. a changed ``rel_volume_20`` cutoff re-renders),
+    with a generic ``"<label> <op> <threshold>"`` fallback so a brand-new filter
+    can never raise. Phrases avoid inner parentheses so they nest cleanly inside
+    :func:`selectivity_hint`'s own parenthetical.
+    """
+    feat = filt.feature
+    if feat == "rel_volume_20" and filt.op in (">", ">="):
+        return f"relative volume {filt.op} {filt.threshold:g}×"
+    if feat == "in_leading_sector":
+        return "in a top-3 sector by 3-mo return"
+    if feat == "price_above_sma_150":
+        return "price above its 150-day average"
+    if feat == "price_above_sma_50":
+        return "price above its 50-day average"
+    if feat == "forward_pe" and filt.op == ">":
+        return "a positive forward P/E"
+    # Generic fallback: "<label> <op> <threshold>" (e.g. "RSI (14) > 50").
+    label = feature_label(feat)
+    if filt.op == "is_true":
+        return label
+    thr = filt.threshold
+    thr_str = f"{thr:g}" if isinstance(thr, (int, float)) and not isinstance(thr, bool) else str(thr)
+    return f"{label} {filt.op} {thr_str}"
+
+
+def hard_filter_phrases(profile: Profile) -> "list[str]":
+    """Plain-English clause for each of ``profile``'s hard filters, in order."""
+    if profile is None or not getattr(profile, "filters", None):
+        return []
+    return [_filter_phrase(f) for f in profile.filters]
+
+
+def selectivity_hint(profile: Profile, n_results: int, n_scanned: int) -> str:
+    """Caption explaining how many scanned names cleared the hard filters.
+
+    e.g. ``"35 of 500 scanned cleared the Swing hard filters (relative volume > 2×
+    and in a top-3 sector by 3-mo return) — hard filters narrow the universe, so a
+    small match count is the profile being selective, not a data error."``.
+
+    This is the antidote to "it only found 35 of 500" confusion: it names the exact
+    cutoffs doing the narrowing so a small result reads as intended selectivity, not
+    a failed fetch. Returns ``""`` for a profile with no hard filters (nothing is
+    screened out, so there is nothing to explain).
+    """
+    phrases = hard_filter_phrases(profile)
+    if not phrases:
+        return ""
+    label = getattr(profile, "label", "") or getattr(profile, "name", "") or "this profile"
+    return (
+        f"{int(n_results)} of {int(n_scanned)} scanned cleared the {label} hard "
+        f"filters ({_join_clauses(phrases)}) — hard filters narrow the universe, so "
+        f"a small match count is the profile being selective, not a data error."
     )

@@ -24,6 +24,7 @@ import pandas as pd
 import streamlit as st
 
 from screener import agent, display
+from screener.cache import Cache
 from screener.profiles import PROFILES, get_profile
 from screener.universe import load_universe
 
@@ -149,6 +150,12 @@ def _build_column_config(profile) -> dict:
             cfg[col] = st.column_config.NumberColumn(label, help=help_text, format=desc.get("format"))
         elif kind == "checkbox":
             cfg[col] = st.column_config.CheckboxColumn(label, help=help_text)
+        elif kind == "link":
+            # Per-ticker external link: `display_text` is the in-cell glyph; the
+            # column holds a real URL per row (built in display.table_view).
+            cfg[col] = st.column_config.LinkColumn(
+                label, help=help_text, display_text=desc.get("display_text"),
+            )
         else:  # text
             cfg[col] = st.column_config.TextColumn(label, help=help_text)
     return cfg
@@ -219,7 +226,11 @@ with st.sidebar:
 
     run_clicked = st.button("Run scan", type="primary", key="run_btn")
     st.caption("Sorting and filtering act on the last scan — no refetch.")
-    st.button("Clear cache & rescan", on_click=st.cache_data.clear)
+    clear_clicked = st.button(
+        "Clear cache & rescan",
+        key="clear_btn",
+        help="Delete today's cached prices/fundamentals and re-fetch from Yahoo, then rescan.",
+    )
 
     # Filters appear only after a scan exists.
     if "scan" in st.session_state:
@@ -260,21 +271,33 @@ if interpret_clicked:
 # Fires on (Run scan) OR (a freshly-applied NL request) — never on a plain rerun.
 # pop() consumes the NL flag so the scan runs exactly once after an Interpret;
 # this IS the cold-scan guard, generalized to two explicit actions.
-do_scan = run_clicked or st.session_state.pop("_nl_run_after_apply", False)
+do_scan = run_clicked or clear_clicked or st.session_state.pop("_nl_run_after_apply", False)
 if do_scan:
-    if run_clicked:
-        # A manual Run scan supersedes any prior NL interpretation — drop the
-        # stale banner so it can't describe a scan the user didn't ask for in
-        # natural language.
+    if clear_clicked:
+        # "Clear cache & rescan" must force FRESH data. st.cache_data.clear() alone
+        # only drops this process's in-memory memo and leaves cache.py's date-keyed
+        # on-disk parquet/JSON in place, so a same-day rescan would re-read identical
+        # files and look like a no-op. Wipe BOTH: the on-disk cache (so the provider
+        # re-hits Yahoo) and the memo (so run_cached recomputes), then fall through
+        # to actually rescan below — the old button did neither.
+        Cache().clear()
+        st.cache_data.clear()
+    if run_clicked or clear_clicked:
+        # A manual Run scan / clear-rescan supersedes any prior NL interpretation —
+        # drop the stale banner so it can't describe a scan the user didn't ask for
+        # in natural language.
         st.session_state.pop("nl_last_req", None)
     # Read from the widget keys, already reconciled with any staged NL values.
     profile_name = st.session_state["profile_name"]
     n_names = st.session_state["n_names"]
     cache_day = dt.date.today().isoformat()
-    with st.spinner(
-        f"Scanning {n_names} names — the first run of the day hits Yahoo "
+    spinner_msg = (
+        f"Cache cleared — re-fetching {n_names} names from Yahoo. This can take a while…"
+        if clear_clicked
+        else f"Scanning {n_names} names — the first run of the day hits Yahoo "
         "and can take a while…"
-    ):
+    )
+    with st.spinner(spinner_msg):
         df = run_cached(profile_name, n_names, cache_day)
     st.session_state["scan"] = {
         "profile_name": profile_name,
@@ -311,6 +334,11 @@ def _render_results(
     so a positional table-click maps straight back to ``view.iloc[pos]``.
     """
     st.caption(display.scan_context_line(profile.label, n_names, cache_day, len(df)))
+    # Name the hard filters doing the narrowing, so a small match count (e.g. swing's
+    # ~35 of 500) reads as intended selectivity, not a failed/partial fetch.
+    hint = display.selectivity_hint(profile, len(df), n_names)
+    if hint:
+        st.caption(hint)
 
     # Swing-only earnings warning banner (gated on the flag inside the helper).
     if "earnings_in_window" in profile.flags:
@@ -377,6 +405,17 @@ def _render_results(
 
     st.subheader(f"Why {symbol} ranks #{int(row['rank'])}")
     st.metric("Score", f"{float(row['score']):.3f}", help=display.SCORE_HELP)
+
+    # Jump straight out to an external chart / quote for the inspected ticker.
+    _tv_col, _yf_col = st.columns(2)
+    _tv_col.link_button(
+        "TradingView", display.tradingview_url(symbol),
+        icon=":material/show_chart:", use_container_width=True,
+    )
+    _yf_col.link_button(
+        "Yahoo", display.yahoo_url(symbol),
+        icon=":material/open_in_new:", use_container_width=True,
+    )
 
     # Swing-only earnings badge for the inspected row.
     if "earnings_in_window" in profile.flags:

@@ -270,6 +270,51 @@ def test_column_config_spec_kinds():
 
 
 # =========================================================================
+# per-ticker external links (tradingview_url / yahoo_url + table threading)
+# =========================================================================
+def test_link_url_builders_and_class_shares():
+    # Bare US large-cap symbols resolve directly on both sites.
+    assert display.tradingview_url("AAPL") == "https://www.tradingview.com/chart/?symbol=AAPL"
+    assert display.yahoo_url("AAPL") == "https://finance.yahoo.com/quote/AAPL"
+    # Class shares: TradingView wants a dot, Yahoo keeps the dash.
+    assert display.tradingview_url("BRK-B") == "https://www.tradingview.com/chart/?symbol=BRK.B"
+    assert display.yahoo_url("BRK-B") == "https://finance.yahoo.com/quote/BRK-B"
+    # Lower-case / whitespace input is canonicalised.
+    assert display.tradingview_url(" brk-b ") == "https://www.tradingview.com/chart/?symbol=BRK.B"
+    assert display.yahoo_url("aapl") == "https://finance.yahoo.com/quote/AAPL"
+
+
+def test_column_order_inserts_links_after_score():
+    mom = _momentum_profile()
+    order = display.column_order(mom, _result_frame())
+    # The two link columns sit immediately after the identity/score block.
+    assert order[:7] == ["rank", "symbol", "name", "sector", "score", "tv_url", "yf_url"]
+    # ...and before any signal column.
+    assert order.index("tv_url") < order.index("momentum_3m")
+    # Gate: a frame with no `symbol` column omits them (never a KeyError).
+    no_sym = pd.DataFrame({"score": [0.5], "rank": [1]})
+    assert "tv_url" not in display.column_order(mom, no_sym)
+
+
+def test_table_view_carries_link_columns():
+    view = display.table_view(_result_frame(("AAPL", "BRK-B")), _momentum_profile())
+    assert "tv_url" in view.columns and "yf_url" in view.columns
+    # Real, non-null URLs per row, with the class-share transform applied.
+    assert view.loc[view["symbol"] == "BRK-B", "tv_url"].iloc[0].endswith("symbol=BRK.B")
+    assert view.loc[view["symbol"] == "BRK-B", "yf_url"].iloc[0].endswith("quote/BRK-B")
+    assert view["tv_url"].notna().all() and view["yf_url"].notna().all()
+
+
+def test_column_config_spec_link_descriptors():
+    spec = display.column_config_spec(_momentum_profile())
+    for col, brand in (("tv_url", "TradingView"), ("yf_url", "Yahoo")):
+        assert spec[col]["kind"] == "link"
+        assert spec[col]["label"] == brand
+        assert spec[col]["display_text"] == "↗"
+        assert spec[col]["help"].strip()
+
+
+# =========================================================================
 # reasons_to_frame / max_contribution / contribution_caption
 # =========================================================================
 def test_reasons_to_frame_order_and_columns():
@@ -508,6 +553,34 @@ def test_messages_and_context_line():
     assert "7" in fe
     assert isinstance(display.DISCLAIMER_TEXT, str) and len(display.DISCLAIMER_TEXT) > 0
     assert isinstance(display.DISCLAIMER_DETAIL, str) and len(display.DISCLAIMER_DETAIL) > 0
+
+
+def test_selectivity_hint_names_hard_filters():
+    swing = get_profile("swing")
+    phrases = display.hard_filter_phrases(swing)
+    # Both swing hard filters are described, with the rel-volume threshold rendered
+    # and the leading-sector clause present.
+    blob = " | ".join(phrases)
+    assert "2" in blob and "×" in blob
+    assert any("sector" in p for p in phrases)
+    # No phrase carries its own parentheses (they nest inside the hint's paren).
+    assert all("(" not in p and ")" not in p for p in phrases)
+
+    hint = display.selectivity_hint(swing, 35, 500)
+    assert "35 of 500" in hint
+    assert "Swing" in hint
+    assert "not a data error" in hint
+    # Exactly one balanced parenthetical, no nesting.
+    assert hint.count("(") == 1 and hint.count(")") == 1
+
+    # A profile with no hard filters yields no hint.
+    nofilt = Profile(name="x", label="X", filters=(), signals=(SignalSpec("momentum_1m", 1.0),))
+    assert display.selectivity_hint(nofilt, 5, 5) == ""
+
+    # Generic fallback for an unknown numeric filter never raises and keeps the value.
+    custom = Profile(name="c", label="C", filters=(Filter("rsi_14", ">", 50.0),))
+    cph = display.hard_filter_phrases(custom)
+    assert cph and "50" in cph[0]
 
 
 def test_feature_labels_fallback():
