@@ -65,9 +65,53 @@ def patterns_for_symbol(symbol: str, cache_day: str) -> dict:
     return patterns.detect_all_timeframes(prices)
 
 
+@st.cache_data(show_spinner=False)
+def levels_for_symbol(symbol: str, cache_day: str) -> dict:
+    """Support/resistance LevelSets for ONE inspected symbol across 1w/1d/1mo.
+
+    Same date-keyed warm-read model as :func:`patterns_for_symbol`. Returns
+    ``dict[str, levels.LevelSet]`` (always keys ``1w``/``1d``/``1mo``); the
+    frozen ``LevelSet``/``Level`` dataclasses are picklable through
+    ``st.cache_data``. Fail-soft: a bad/short frame yields empty LevelSets.
+    """
+    from screener.provider import YFinanceProvider   # import INSIDE the function
+    from screener import levels
+    prices = YFinanceProvider().price_history(symbol)
+    return levels.levels_all_timeframes(prices)
+
+
+@st.cache_data(show_spinner=False)
+def extension_for_symbol(symbol: str, cache_day: str) -> dict:
+    """Overextension/parabolic readout for ONE inspected symbol (daily).
+
+    Returns ``ExtensionState.to_dict()`` (a plain dict) so the richer detail
+    fields (pct_above_ema20/50, rsi, up_run, atr_pct) survive ``st.cache_data``
+    pickling. Fail-soft: a bad/short frame yields the neutral default
+    (state ``"normal"``, score ``0.0``, NaN detail fields).
+    """
+    from screener.provider import YFinanceProvider   # import INSIDE the function
+    from screener import indicators
+    prices = YFinanceProvider().price_history(symbol)
+    return indicators.extension_state(prices).to_dict()
+
+
+@st.cache_data(show_spinner=False)
+def buy_zone_for_symbol(symbol: str, cache_day: str):
+    """Daily buy zone (entry band) for ONE inspected symbol — or ``None``.
+
+    Returns a frozen ``levels.BuyZone`` (picklable) or ``None`` when no support
+    sits below the close and the 20-EMA is not rising. Date-keyed warm read,
+    same model as :func:`patterns_for_symbol`.
+    """
+    from screener.provider import YFinanceProvider   # import INSIDE the function
+    from screener import levels
+    prices = YFinanceProvider().price_history(symbol)
+    return levels.buy_zone(prices, timeframe="1d")
+
+
 # --- title + global disclaimer caption -----------------------------------
 st.title("📈 Stock Screener")
-st.caption("US large-cap · end-of-day · ranks and describes, never advises")
+st.caption("US large-cap · end-of-day · ranks and describes · educational buy zone, not advice")
 
 # --- load the universe (surface failures, don't crash) -------------------
 try:
@@ -246,6 +290,12 @@ with st.sidebar:
         st.slider("Minimum score", 0.0, 1.0, step=0.01, key="f_min_score")
         if "earnings_in_window" in profile.flags:
             st.checkbox("Only earnings-in-window", key="f_earnings_only")
+        # Universe-wide TA filters (columns exist on every profile's scan; gate on
+        # presence so they're no-ops if the engine ever omits them).
+        if "extension_state" in scanned.columns:
+            st.checkbox("Hide overextended (parabolic)", key="f_extended_hidden")
+        if "in_buy_zone" in scanned.columns:
+            st.checkbox("In buy zone only", key="f_in_buy_zone_only")
 
     st.divider()
     st.caption(display.DISCLAIMER_TEXT)
@@ -347,12 +397,27 @@ def _render_results(
             st.warning(banner)
 
     table_df = display.table_view(view, profile)
+    col_order = display.column_order(profile, view)
+    # Append the two universe-wide TA columns (owned here, not by column_order):
+    # Extension renders as badge TEXT (emoji = the only per-cell color cue a
+    # TextColumn allows); In buy zone stays a raw bool for the CheckboxColumn.
+    # table_view copies only column_order cols, so add them from `view` directly.
+    # Display-only augmentation of table_df is safe: the positional click below
+    # still indexes `view` (unmodified), not table_df.
+    if "extension_state" in view.columns:
+        table_df["extension_state"] = view["extension_state"].map(display.extension_badge).values
+        if "extension_state" not in col_order:
+            col_order.append("extension_state")
+    if "in_buy_zone" in view.columns:
+        table_df["in_buy_zone"] = view["in_buy_zone"].values
+        if "in_buy_zone" not in col_order:
+            col_order.append("in_buy_zone")
     cfg = _build_column_config(profile)
     event = st.dataframe(
         table_df,
         hide_index=True,
         width="stretch",
-        column_order=display.column_order(profile, view),
+        column_order=col_order,
         column_config=cfg,
         on_select="rerun",
         selection_mode="single-row",
@@ -512,6 +577,67 @@ def _render_results(
                 },
             )
 
+    # --- Overextension (how stretched the inspected symbol is) ------------
+    # Warm per-symbol read (date-keyed cache), same model as Chart patterns.
+    # extension_for_symbol returns ExtensionState.to_dict(); detail % fields can
+    # be NaN on a short frame -> format_signed_pct renders "—" rather than raise.
+    st.divider()
+    st.subheader("Overextension")
+    ext = extension_for_symbol(symbol, cache_day)
+    ext_state = ext.get("state", "normal")
+    st.badge(
+        display.extension_badge(ext_state),
+        color=display.extension_state_color(ext_state),
+    )
+    _e20, _e50, _ersi, _erun = st.columns(4)
+    _e20.metric("% above 20-EMA", display.format_signed_pct(ext.get("pct_above_ema20")))
+    _e50.metric("% above 50-EMA", display.format_signed_pct(ext.get("pct_above_ema50")))
+    _rsi_val = ext.get("rsi")
+    _ersi.metric(
+        "RSI(14)",
+        "—" if _rsi_val != _rsi_val or _rsi_val is None else f"{float(_rsi_val):.0f}",
+    )
+    _erun.metric("Up-day run", f"{int(ext.get('up_run', 0))}")
+    st.caption(display.EXTENSION_HELP)
+
+    # --- Support & resistance (תמיכה והתנגדות) per timeframe --------------
+    # levels_for_symbol returns dict[tf, LevelSet]; levels_to_frame yields a
+    # frame with a numeric 0..1 Strength (ProgressColumn, like the Confidence
+    # bar above) and a pre-formatted signed-pct Distance string (TextColumn).
+    st.divider()
+    st.subheader("Support & resistance")
+    level_sets = levels_for_symbol(symbol, cache_day)
+    for tf in ("1w", "1d", "1mo"):
+        st.markdown(f"**{TF_LABELS[tf]}**")
+        frame = display.levels_to_frame(level_sets.get(tf))
+        if frame.empty:
+            st.caption("No notable levels.")
+            continue
+        st.dataframe(
+            frame,
+            hide_index=True,
+            width="stretch",
+            column_config={
+                "Strength": st.column_config.ProgressColumn(
+                    "Strength", format="%.2f", min_value=0.0, max_value=1.0
+                ),
+            },
+        )
+    st.caption(display.LEVELS_HELP)
+
+    # --- Buy zone (explicit entry band — descriptive, with disclaimer) ----
+    # The disclaimer travels inside buy_zone_caption in BOTH the present-zone
+    # and None branches (a guardrail for the relaxed "no advice" stance).
+    st.divider()
+    st.subheader("Buy zone")
+    zone = buy_zone_for_symbol(symbol, cache_day)
+    st.metric("Buy zone", display.format_buy_zone(zone))
+    if zone is None:
+        st.caption("No buy zone below the current price.")
+    st.caption(display.buy_zone_caption(zone))
+    with st.expander("ℹ️ About the buy zone"):
+        st.caption(display.BUY_ZONE_HELP)
+
 
 # --- NL transparency: show how the last request was interpreted ----------
 # Above the four-state switch so the user always sees the interpretation that
@@ -551,6 +677,8 @@ else:
             min_score=st.session_state.get("f_min_score", 0.0),
             earnings_only=st.session_state.get("f_earnings_only", False),
             profile=profile,
+            extended_hidden=st.session_state.get("f_extended_hidden", False),
+            in_buy_zone_only=st.session_state.get("f_in_buy_zone_only", False),
         )
         if len(view) == 0:
             # FILTERED_EMPTY: filters hid every row (filters stay in the sidebar).
