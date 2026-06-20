@@ -673,6 +673,7 @@ def test_extension_state_missing_close_column_safe():
 
 # --- snapshot ------------------------------------------------------------
 EXPECTED_KEYS = {
+    "price", "change_pct", "atr", "atr_pct",
     "momentum_1m", "momentum_3m", "momentum_6m", "momentum_12m",
     "rsi_14", "macd", "macd_signal", "macd_hist",
     "rel_volume_20", "dist_52w_high",
@@ -728,6 +729,41 @@ def test_snapshot_extension_keys_present_on_short_and_empty():
     snap = ind.snapshot(empty)
     assert "extension_state" in snap and "extension_score" in snap
     assert snap["extension_state"] == "normal"
+
+
+def test_snapshot_headline_keys_on_long_frame():
+    # price = last close; change_pct = latest daily return as a FRACTION;
+    # atr (14) finite and ~1.0 on a +1/bar series (high=low=close -> TR=1);
+    # atr_pct = atr / price exactly.
+    closes = [100.0 + i for i in range(60)]   # last = 159, prior = 158
+    snap = ind.snapshot(_frame(closes))
+    assert math.isclose(snap["price"], 159.0)
+    assert math.isclose(snap["change_pct"], 1.0 / 158.0, rel_tol=1e-9)
+    assert not _isnan(snap["atr"]) and 0.9 < snap["atr"] < 1.0
+    assert math.isclose(snap["atr_pct"], snap["atr"] / snap["price"], rel_tol=1e-12)
+
+
+def test_snapshot_headline_keys_nan_on_empty_and_single_bar():
+    # Empty frame -> all four headline keys NaN.
+    empty = pd.DataFrame(
+        columns=["open", "high", "low", "close", "volume"],
+        index=pd.DatetimeIndex([], name="date"),
+    )
+    snap = ind.snapshot(empty)
+    for key in ("price", "change_pct", "atr", "atr_pct"):
+        assert _isnan(snap[key]), key
+    # Single bar -> price resolves, but change_pct needs >=2 bars and atr needs >=14.
+    one = ind.snapshot(_frame([42.0]))
+    assert math.isclose(one["price"], 42.0)
+    assert _isnan(one["change_pct"])
+    assert _isnan(one["atr"]) and _isnan(one["atr_pct"])
+
+
+def test_snapshot_change_pct_handles_zero_prior_close():
+    # A zero prior close must not divide-by-zero -> change_pct NaN, price still set.
+    snap = ind.snapshot(_frame([0.0, 5.0]))
+    assert math.isclose(snap["price"], 5.0)
+    assert _isnan(snap["change_pct"])
 
 
 def test_snapshot_degrades_on_short_frame():

@@ -53,6 +53,8 @@ class Fundamentals:
     trailing_pe: float | None = None
     revenue_growth: float | None = None   # latest reported YoY, as a fraction (0.12 = 12%)
     earnings_growth: float | None = None  # latest reported YoY, as a fraction
+    industry: str | None = None           # GICS sub-classification, finer than sector
+    business_summary: str | None = None   # long prose "what the company does" (detail-panel only)
 
     @property
     def is_empty(self) -> bool:
@@ -171,6 +173,8 @@ class YFinanceProvider(DataProvider):
             trailing_pe=_num(info.get("trailingPE")),
             revenue_growth=_first_num(info, "revenueGrowth"),
             earnings_growth=_first_num(info, "earningsGrowth", "earningsQuarterlyGrowth"),
+            industry=_text(info.get("industry")),
+            business_summary=_text(info.get("longBusinessSummary")),
         )
 
     def _info(self, sym: str) -> Mapping:

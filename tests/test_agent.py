@@ -224,10 +224,17 @@ def test_parse_query_fallback_without_key():
         assert agent.agent_available() is False
         got = agent.parse_query("top 15 swing names", universe_sectors=SECTORS)
         expected = agent.rule_based_parse("top 15 swing names", SECTORS)
-        # Same result as the rule-based parser, field for field.
-        assert got == expected
+        # Identical to the rule-based parser on every field EXCEPT the explanation,
+        # which now carries a visible fallback note (Stage 4 transparency).
+        assert dataclasses.replace(got, explanation="") == dataclasses.replace(expected, explanation="")
         assert got.profile == "swing"
         assert got.n_names == 15
+        # The explanation says it fell back and WHY (no key), folding the reason
+        # into the rule parser's own "Rule-based: <summary>" prefix.
+        assert got.explanation.startswith("Rule-based (")
+        assert "unavailable" in got.explanation
+        summary = expected.explanation.split(":", 1)[1].strip()  # "profile=swing, top 15"
+        assert summary in got.explanation
     finally:
         if saved is not None:
             os.environ["ANTHROPIC_API_KEY"] = saved
@@ -298,6 +305,7 @@ _AGENT_ENV_KEYS = (
     "OPENAI_API_KEY",
     "XAI_API_KEY",
     "GEMINI_API_KEY",
+    "GOOGLE_API_KEY",  # Gemini key alias (Stage 4)
     "MISTRAL_API_KEY",
     # the per-provider model overrides
     "SCREENER_ANTHROPIC_MODEL",
@@ -551,6 +559,90 @@ def test_agent_available_never_raises():
 
 
 # =========================================================================
+# Stage 4 — GOOGLE_API_KEY alias + availability_status + visible fallback reason
+# =========================================================================
+def test_gemini_google_api_key_alias():
+    saved = _snapshot_env()
+    saved_find = importlib.util.find_spec
+    try:
+        _clear_agent_env()
+        importlib.util.find_spec = _patch_find_spec(True)
+        # No key at all -> unavailable.
+        assert agent.agent_available("gemini") is False
+        # The official GOOGLE_API_KEY alias counts as the Gemini key.
+        os.environ["GOOGLE_API_KEY"] = "g-test"
+        assert agent.agent_available("gemini") is True
+        assert agent._provider_api_key(agent.PROVIDERS["gemini"]) == "g-test"
+        # The primary GEMINI_API_KEY takes precedence when both are set.
+        os.environ["GEMINI_API_KEY"] = "primary"
+        assert agent._provider_api_key(agent.PROVIDERS["gemini"]) == "primary"
+        # The alias is Gemini-only: it does NOT satisfy another provider's key.
+        assert agent._provider_api_key(agent.PROVIDERS["openai"]) is None
+    finally:
+        importlib.util.find_spec = saved_find
+        _restore_env(saved)
+
+
+def test_availability_status_reasons():
+    saved = _snapshot_env()
+    saved_find = importlib.util.find_spec
+    try:
+        _clear_agent_env()
+        importlib.util.find_spec = _patch_find_spec(True)
+        # Missing key -> (False, reason naming the env var(s)).
+        ok, reason = agent.availability_status("openai")
+        assert ok is False and "OPENAI_API_KEY" in reason
+        # Gemini's reason names BOTH the primary key and the GOOGLE_API_KEY alias.
+        ok, reason = agent.availability_status("gemini")
+        assert ok is False
+        assert "GEMINI_API_KEY" in reason and "GOOGLE_API_KEY" in reason
+        # Key present + SDK present -> ready.
+        os.environ["OPENAI_API_KEY"] = "sk-test"
+        assert agent.availability_status("openai") == (True, "ready")
+        # Key present but SDK absent -> a "not importable" reason, not "no key".
+        importlib.util.find_spec = _patch_find_spec(False)
+        ok, reason = agent.availability_status("openai")
+        assert ok is False and "openai" in reason and "importable" in reason
+    finally:
+        importlib.util.find_spec = saved_find
+        _restore_env(saved)
+
+
+def test_availability_status_ollama_keyless_ready():
+    saved = _snapshot_env()
+    saved_find = importlib.util.find_spec
+    try:
+        _clear_agent_env()
+        importlib.util.find_spec = _patch_find_spec(True)
+        # Keyless Ollama: ready on SDK alone (no key reason ever).
+        assert agent.availability_status("ollama") == (True, "ready")
+    finally:
+        importlib.util.find_spec = saved_find
+        _restore_env(saved)
+
+
+def test_parse_query_llm_error_note_in_explanation():
+    # The exception fallback path annotates the explanation with the error reason.
+    saved_available = agent.agent_available
+    saved_extract = agent._llm_extract
+
+    def _boom(*args, **kwargs):
+        raise RuntimeError("kaboom-detail")
+
+    try:
+        agent.agent_available = lambda *a, **k: True
+        agent._llm_extract = _boom
+        req = agent.parse_query("top 7 momentum names", universe_sectors=SECTORS)
+        assert req.profile == "momentum" and req.n_names == 7
+        assert req.explanation.startswith("Rule-based (")
+        assert "error" in req.explanation
+        assert "RuntimeError" in req.explanation  # the exception type is surfaced
+    finally:
+        agent.agent_available = saved_available
+        agent._llm_extract = saved_extract
+
+
+# =========================================================================
 # _set_screen_schema — strict-safe object schema
 # =========================================================================
 def test_set_screen_schema_sectors_enum():
@@ -645,12 +737,16 @@ def test_parse_query_fallback_all_providers():
                 "top 12 swing names", universe_sectors=SECTORS, provider=pid
             )
             expected = agent.rule_based_parse("top 12 swing names", SECTORS)
-            assert got == expected, pid
+            # Identical to the rule parser EXCEPT the explanation, which now carries
+            # the visible fallback reason (no key -> "unavailable"; a keyless Ollama
+            # with no local server -> "error" from the refused connection).
+            assert dataclasses.replace(got, explanation="") == dataclasses.replace(expected, explanation=""), pid
             assert got.profile == "swing"
             assert got.n_names == 12
-            # The offline path is unprefixed: it must NOT claim to be LLM-backed.
+            # The offline path is labelled rule-based, never LLM, and states WHY.
             assert not got.explanation.startswith("LLM"), pid
-            assert got.explanation.startswith("Rule-based: "), pid
+            assert got.explanation.startswith("Rule-based"), pid
+            assert ("unavailable" in got.explanation) or ("error" in got.explanation), pid
     finally:
         _restore_env(saved)
 

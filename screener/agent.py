@@ -293,6 +293,35 @@ def _resolve_model(provider: Provider, model: Optional[str]) -> str:
     )
 
 
+# Extra env aliases accepted for a provider's API key, tried after its primary
+# ``env_key``. Gemini's official Google SDKs read GOOGLE_API_KEY, so we honor it
+# too — a common reason a valid Gemini key "isn't seen" is it's under that name.
+_KEY_ALIASES: "dict[str, tuple[str, ...]]" = {
+    "gemini": ("GOOGLE_API_KEY",),
+}
+
+
+def _provider_api_key(provider: Provider) -> "Optional[str]":
+    """The API key for ``provider`` from the environment, honoring aliases.
+
+    Reads ``provider.env_key`` first, then any :data:`_KEY_ALIASES` for that
+    provider (e.g. ``GOOGLE_API_KEY`` for Gemini). Keyless providers
+    (``env_key == ""``, i.e. Ollama) and a wholly-unset key return ``None``.
+    """
+    if not provider.env_key:
+        return None
+    for name in (provider.env_key, *_KEY_ALIASES.get(provider.id, ())):
+        val = os.environ.get(name)
+        if val:
+            return val
+    return None
+
+
+def _key_names(provider: Provider) -> str:
+    """Human list of the env var(s) that supply ``provider``'s key (for messages)."""
+    return " / ".join((provider.env_key, *_KEY_ALIASES.get(provider.id, ())))
+
+
 # --- the safety layer: coerce + clamp ANY input, never raise -------------
 def validate_request(raw_params: dict, universe_sectors: Iterable[str]) -> ScreenRequest:
     """Coerce/clamp an arbitrary params dict into a valid :class:`ScreenRequest`.
@@ -565,7 +594,7 @@ def agent_available(provider: Optional[str] = None) -> bool:
     """
     try:
         p = _resolve_provider(provider)
-        if p.env_key and not os.environ.get(p.env_key):
+        if p.env_key and not _provider_api_key(p):
             return False
         import importlib.util
 
@@ -573,6 +602,33 @@ def agent_available(provider: Optional[str] = None) -> bool:
         return importlib.util.find_spec(sdk) is not None
     except Exception:  # noqa: BLE001 - availability probe must never raise
         return False
+
+
+def availability_status(provider: Optional[str] = None) -> "tuple[bool, str]":
+    """``(usable, human reason)`` for the resolved backend — drives the sidebar.
+
+    Mirrors :func:`agent_available`'s two checks but returns WHY it is or isn't
+    usable, so the UI can be self-diagnosing instead of silently degrading:
+
+    - missing key  -> ``(False, "no <ENV_KEY[ / alias]> in this environment")``
+      (e.g. ``"no GEMINI_API_KEY / GOOGLE_API_KEY in this environment"``);
+    - missing SDK  -> ``(False, "<sdk> SDK not importable (pip install <sdk>)")``;
+    - otherwise    -> ``(True, "ready")``.
+
+    Key is checked first (the common, user-fixable case). Never raises.
+    """
+    try:
+        p = _resolve_provider(provider)
+        if p.env_key and not _provider_api_key(p):
+            return False, f"no {_key_names(p)} in this environment"
+        import importlib.util
+
+        sdk = "anthropic" if p.kind == "anthropic" else "openai"
+        if importlib.util.find_spec(sdk) is None:
+            return False, f"{sdk} SDK not importable (pip install {sdk})"
+        return True, "ready"
+    except Exception:  # noqa: BLE001 - status probe must never raise
+        return False, "unavailable"
 
 
 def _set_screen_schema(sector_list: "list[str]") -> dict:
@@ -670,7 +726,7 @@ def _llm_extract(
     ) or provider.base_url
     client = openai.OpenAI(
         base_url=base_url,
-        api_key=(os.environ.get(provider.env_key) or "ollama"),
+        api_key=(_provider_api_key(provider) or "ollama"),
     )
     resp = client.chat.completions.create(
         model=_resolve_model(provider, model),
@@ -712,10 +768,13 @@ def parse_query(
     result's ``explanation`` is prefixed with the provider id (e.g. ``"LLM (openai): …"``)
     for transparency.
     """
+    p = _resolve_provider(provider)
     if not agent_available(provider):
-        return rule_based_parse(query, universe_sectors)
+        # Visible fallback: surface WHY (no key / no SDK) in the explanation so the
+        # NL banner explains the degrade instead of silently using the rule parser.
+        _, reason = availability_status(provider)
+        return _rule_based_with_note(query, universe_sectors, f"{p.label} unavailable: {reason}")
     try:
-        p = _resolve_provider(provider)
         raw = _llm_extract(query, universe_sectors, p, model)  # may raise
         req = validate_request(raw, universe_sectors)
         # Ensure a transparency note even if the model omitted one.
@@ -730,5 +789,31 @@ def parse_query(
         else:
             req = replace(req, explanation=f"LLM ({p.id}): " + req.explanation)
         return req
-    except Exception:  # noqa: BLE001 - any failure degrades to the offline parser
-        return rule_based_parse(query, universe_sectors)
+    except Exception as exc:  # noqa: BLE001 - any failure degrades to the offline parser
+        return _rule_based_with_note(query, universe_sectors, f"{p.label} error: {_short_err(exc)}")
+
+
+def _short_err(exc: Exception) -> str:
+    """A compact, single-line ``Type: message`` for an exception (for the banner)."""
+    first = (str(exc).strip().splitlines() or [""])[0][:120]
+    return f"{type(exc).__name__}: {first}" if first else type(exc).__name__
+
+
+def _rule_based_with_note(
+    query: str, universe_sectors: Iterable[str], note: str
+) -> ScreenRequest:
+    """:func:`rule_based_parse` with the fallback ``note`` folded into the
+    explanation, so a degrade always says WHY while keeping the rule parser's own
+    summary. The rule parser already prefixes ``"Rule-based: <summary>"``; we
+    rewrite that to ``"Rule-based (<note>): <summary>"`` rather than stacking a
+    second "Rule-based" in front.
+    """
+    req = rule_based_parse(query, universe_sectors)
+    expl = req.explanation
+    label = "Rule-based:"
+    if expl.startswith(label):
+        summary = expl[len(label):].strip()
+        explanation = f"Rule-based ({note}): {summary}" if summary else f"Rule-based ({note})"
+    else:
+        explanation = f"Rule-based ({note}) — {expl}" if expl else f"Rule-based ({note})"
+    return replace(req, explanation=explanation)

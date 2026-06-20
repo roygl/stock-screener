@@ -51,10 +51,11 @@ def _long_term_profile() -> Profile:
 def _result_frame(symbols=("AAPL", "MSFT", "NVDA"), *, swing=False):
     """A small, well-formed result frame mirroring the engine's schema.
 
-    Includes the lead columns, a couple of raw signal feature columns for each
-    profile family, a ``reasons`` column, and (when ``swing``) the
-    ``earnings_in_window`` (bool) + ``days_to_earnings`` (float64 with NaN)
-    columns the engine emits for swing.
+    Includes the lead columns, the headline price columns (``price`` /
+    ``change_pct``), a couple of raw signal feature columns for each profile family,
+    the universe-wide tactical readouts (``extension_state`` / ``in_buy_zone``), a
+    ``reasons`` column, and (when ``swing``) the ``earnings_in_window`` (bool) +
+    ``days_to_earnings`` (float64 with NaN) columns the engine emits for swing.
     """
     n = len(symbols)
     data = {
@@ -63,11 +64,17 @@ def _result_frame(symbols=("AAPL", "MSFT", "NVDA"), *, swing=False):
         "sector": ["Technology", "Technology", "Energy"][:n],
         "score": [0.80, 0.55, 0.30][:n],
         "rank": list(range(1, n + 1)),
+        # headline price scalars (Stage 1): last close + signed daily change fraction
+        "price": [195.0, 410.0, 120.0][:n],
+        "change_pct": [0.012, -0.008, 0.031][:n],
         # a percent-style feature and a couple raw ratios for table tests
         "momentum_3m": [0.18, 0.05, -0.02][:n],
         "momentum_12m": [0.95, 0.40, 0.10][:n],
         "rel_volume_20": [3.1, 2.4, 5.0][:n],
         "forward_pe": [18.0, 25.0, 30.0][:n],
+        # universe-wide tactical readouts (present for every profile's scan)
+        "extension_state": ["normal", "extended", "parabolic"][:n],
+        "in_buy_zone": [True, False, True][:n],
         "reasons": [OrderedDict() for _ in range(n)],
     }
     if swing:
@@ -291,7 +298,7 @@ def test_apply_filters_in_buy_zone_only():
 
 def test_apply_filters_tactical_flags_noop_when_columns_absent():
     # A frame WITHOUT the tactical columns must ignore both new flags (no KeyError).
-    df = _result_frame()  # plain momentum frame, no extension/buy-zone columns
+    df = _result_frame().drop(columns=["extension_state", "in_buy_zone"])
     mom = _momentum_profile()
     out = display.apply_filters(df, text="", sectors=[], min_score=0.0,
                                 earnings_only=False, profile=mom,
@@ -324,28 +331,36 @@ def test_table_view_columns_per_profile():
     # The per-row narrative is the LAST column.
     assert lt_view.columns[-1] == "why"
     assert "reasons" not in lt_view.columns
-    assert not any(c.endswith("_pct") for c in lt_view.columns)
+    # No internal *_pct PERCENTILE columns leak (the headline change_pct is allowed).
+    assert not any(c.endswith("_pct") for c in lt_view.columns if c != "change_pct")
 
-    # momentum
+    # Compact (default) is lean: NO per-profile signal columns, but the headline
+    # price columns and the tactical readouts are present.
+    assert "momentum_3m" not in lt_view.columns
+    for col in ("price", "change_pct", "extension_state", "in_buy_zone"):
+        assert col in lt_view.columns
+
+    # momentum — signals appear only in the Detailed density.
     mom = _momentum_profile()
-    mom_view = display.table_view(_result_frame(), mom)
+    assert "momentum_3m" not in display.table_view(_result_frame(), mom).columns
+    mom_view = display.table_view(_result_frame(), mom, density="detailed")
     assert "momentum_3m" in mom_view.columns
     assert "reasons" not in mom_view.columns
 
-    # swing: earnings columns appended; reasons/pct excluded
+    # swing: earnings columns appear in Detailed; reasons/pct excluded
     sw = _swing_profile()
-    sw_view = display.table_view(_result_frame(swing=True), sw)
+    sw_view = display.table_view(_result_frame(swing=True), sw, density="detailed")
     assert "earnings_in_window" in sw_view.columns
     assert "days_to_earnings" in sw_view.columns
     assert "reasons" not in sw_view.columns
-    assert not any(c.endswith("_pct") for c in sw_view.columns)
+    assert not any(c.endswith("_pct") for c in sw_view.columns if c != "change_pct")
 
 
 def test_table_view_missing_column_failsoft():
     # A result frame missing one of the profile's signal columns must not raise.
     df = _result_frame()  # has momentum_3m but not all momentum signals
     mom = _momentum_profile()
-    view = display.table_view(df, mom)
+    view = display.table_view(df, mom, density="detailed")
     # Only the intersection of signal columns appears; lead cols always present.
     assert "momentum_3m" in view.columns
     assert "momentum_6m" not in view.columns  # absent from the fixture
@@ -403,7 +418,8 @@ def test_link_url_builders_and_class_shares():
 
 def test_column_order_inserts_fit_and_links_after_identity():
     mom = _momentum_profile()
-    order = display.column_order(mom, _result_frame())
+    # Detailed shows signals; the prefix + why-last hold in BOTH densities.
+    order = display.column_order(mom, _result_frame(), density="detailed")
     # `fit` takes the visible score slot, then the two link columns, then signals.
     assert order[:7] == ["rank", "symbol", "name", "sector", "fit", "tv_url", "yf_url"]
     assert order.index("tv_url") < order.index("momentum_3m")
@@ -414,6 +430,27 @@ def test_column_order_inserts_fit_and_links_after_identity():
     assert "tv_url" not in display.column_order(mom, no_sym)
     # ...but `fit` is still present (it derives from `score`).
     assert "fit" in display.column_order(mom, no_sym)
+
+
+def test_column_order_compact_vs_detailed_density():
+    mom = _momentum_profile()
+    df = _result_frame()
+    compact = display.column_order(mom, df)                       # default = compact
+    detailed = display.column_order(mom, df, density="detailed")
+    # Shared prefix in both: identity, fit, links, then headline price columns.
+    expected_prefix = ["rank", "symbol", "name", "sector", "fit", "tv_url", "yf_url",
+                       "price", "change_pct"]
+    assert compact[:9] == expected_prefix
+    assert detailed[:9] == expected_prefix
+    # Compact carries the tactical readouts but NO profile signals.
+    assert "extension_state" in compact and "in_buy_zone" in compact
+    assert "momentum_3m" not in compact
+    # Detailed adds the signals (between price and the tactical block) and keeps
+    # the tactical readouts; `why` is last in both.
+    assert "momentum_3m" in detailed
+    assert detailed.index("momentum_3m") < detailed.index("extension_state")
+    assert "extension_state" in detailed and "in_buy_zone" in detailed
+    assert compact[-1] == "why" and detailed[-1] == "why"
 
 
 def test_table_view_carries_link_columns():
@@ -448,6 +485,21 @@ def test_column_config_spec_tactical_descriptors():
         # Still plain dicts (the purity boundary holds).
         assert isinstance(spec["extension_state"], dict)
         assert isinstance(spec["in_buy_zone"], dict)
+
+
+def test_column_config_spec_headline_price_descriptors():
+    # price + change_pct are present for EVERY profile: price as a plain number
+    # (app.py prefixes "$"), change_pct as a SIGNED percent (app.py colours it).
+    for prof in (_momentum_profile(), _long_term_profile(), _swing_profile()):
+        spec = display.column_config_spec(prof)
+        assert spec["price"]["kind"] == "number"
+        assert spec["price"]["format"] == "%.2f"
+        assert spec["price"]["label"] == "Price"
+        assert spec["price"]["help"].strip()
+        assert spec["change_pct"]["kind"] == "percent"
+        assert spec["change_pct"]["format"] == "percent"
+        assert spec["change_pct"]["signed"] is True
+        assert spec["change_pct"]["help"].strip()
 
 
 # =========================================================================
@@ -763,6 +815,10 @@ def test_format_value_tactical_keys():
     assert display.format_value("dist_to_buy_zone_pct", -0.012) == "-1.2%"
     assert display.format_value("dist_to_buy_zone_pct", 0.0) == "+0.0%"
     assert display.format_value("dist_to_buy_zone_pct", None) == "—"
+    # change_pct: also a SIGNED percent (green up / red down in the grid).
+    assert display.format_value("change_pct", 0.012) == "+1.2%"
+    assert display.format_value("change_pct", -0.008) == "-0.8%"
+    assert display.format_value("change_pct", float("nan")) == "—"
     # in_buy_zone: a boolean Yes/No like the other bool features.
     assert display.format_value("in_buy_zone", True) == "Yes"
     assert display.format_value("in_buy_zone", False) == "No"
@@ -770,6 +826,29 @@ def test_format_value_tactical_keys():
     # extension_state: the categorical badge text (never a float / KeyError).
     assert display.format_value("extension_state", "parabolic") == "🔴 Parabolic"
     assert display.format_value("extension_state", "normal") == "🟢 Normal"
+
+
+def test_format_price():
+    assert display.format_price(195.0) == "$195.00"
+    assert display.format_price(1234.5) == "$1,234.50"
+    assert display.format_price(0.0) == "$0.00"
+    assert display.format_price(None) == "—"
+    assert display.format_price(float("nan")) == "—"
+    assert display.format_price("not a number") == "—"
+
+
+def test_format_market_cap():
+    # Human units, one decimal, largest-first.
+    assert display.format_market_cap(1.23e12) == "$1.2T"
+    assert display.format_market_cap(3.45e11) == "$345.0B"
+    assert display.format_market_cap(1.2e7) == "$12.0M"
+    # Below $1M -> plain grouped dollars.
+    assert display.format_market_cap(5e5) == "$500,000"
+    # Degenerate / unknown caps fail soft.
+    assert display.format_market_cap(0) == "—"
+    assert display.format_market_cap(-5) == "—"
+    assert display.format_market_cap(None) == "—"
+    assert display.format_market_cap(float("nan")) == "—"
     assert display.format_value("extension_state", None) == "—"
 
 
@@ -1086,10 +1165,10 @@ def test_end_to_end_with_fakeprovider_optional():
                                  earnings_only=False, profile=swing)
     assert list(view.index) == list(range(len(view)))  # index reset
 
-    table = display.table_view(view, swing)
+    table = display.table_view(view, swing, density="detailed")
     assert "reasons" not in table.columns
-    assert "earnings_in_window" in table.columns  # swing
-    assert not any(c.endswith("_pct") for c in table.columns)
+    assert "earnings_in_window" in table.columns  # swing (Detailed reveals signals)
+    assert not any(c.endswith("_pct") for c in table.columns if c != "change_pct")
 
     # The first row's genuine reasons -> tidy frame; contributions sum to score.
     row = result.iloc[0]

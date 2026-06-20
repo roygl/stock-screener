@@ -19,6 +19,7 @@ Run locally:
 from __future__ import annotations
 
 import datetime as dt
+import os
 
 import pandas as pd
 import streamlit as st
@@ -31,6 +32,30 @@ from screener.profiles import PROFILES, get_profile
 from screener.universe import load_universe
 
 st.set_page_config(page_title="Stock Screener", page_icon="📈", layout="wide")
+
+
+# --- secrets -> env bridge -----------------------------------------------
+# The agent reads API keys from os.environ. When the app is launched OUTSIDE the
+# interactive shell that exported the key (e.g. Streamlit Cloud, a desktop click,
+# or a plain `streamlit run`), that key is invisible — so the NL search silently
+# used the offline parser. Copy any provider key found in .streamlit/secrets.toml
+# into os.environ ONCE, before anything reads availability, so a secrets.toml works
+# regardless of launch context. Env always wins (we never overwrite a set var), and
+# this is offline-first: no secrets file -> a harmless no-op (no key UI, ever).
+def _bridge_secrets_to_env() -> None:
+    names = {p.env_key for p in agent.PROVIDERS.values() if p.env_key} | {"GOOGLE_API_KEY"}
+    for name in names:
+        if os.environ.get(name):
+            continue
+        try:
+            val = st.secrets.get(name)  # safe even when no secrets.toml exists
+        except Exception:
+            val = None
+        if val:
+            os.environ[name] = str(val)
+
+
+_bridge_secrets_to_env()
 
 
 # --- memoized scan -------------------------------------------------------
@@ -189,6 +214,22 @@ _JS_PERCENT = JsCode(
     "function(p){ return (p.value==null||isNaN(p.value)) ? '—' : "
     "(p.value*100).toFixed(1) + '%'; }"
 )
+# Headline-price formatters: a "$"-prefixed money cell and a SIGNED percent
+# (fraction ×100 with an explicit +/-), plus a green/red colour for the daily
+# change — finance-site convention. Style stays a plain object (the file's
+# "valueFormatter + cellStyle only, never cellRenderer" rule).
+_JS_MONEY = JsCode(
+    "function(p){ return (p.value==null||isNaN(p.value)) ? '—' : "
+    "'$' + Number(p.value).toFixed(2); }"
+)
+_JS_PERCENT_SIGNED = JsCode(
+    "function(p){ if(p.value==null||isNaN(p.value)) return '—'; "
+    "var v=p.value*100; return (v>=0?'+':'') + v.toFixed(2) + '%'; }"
+)
+_JS_CHANGE_STYLE = JsCode(
+    "function(p){ if(p.value==null||isNaN(p.value)) return {}; "
+    "return {color: p.value >= 0 ? '#188038' : '#d93025'}; }"
+)
 _JS_FIT_STYLE = JsCode(
     "function(p){"
     " if(p.value==null||isNaN(p.value)) return {};"
@@ -217,6 +258,13 @@ def _configure_aggrid_column(gb, col: str, desc: dict) -> None:
         gb.configure_column(col, header_name=label, headerTooltip=tip,
                             valueFormatter=_js_number(0), cellStyle=_JS_FIT_STYLE,
                             type=["numericColumn"], width=86)
+    elif col == "price":
+        gb.configure_column(col, header_name=label, headerTooltip=tip,
+                            valueFormatter=_JS_MONEY, type=["numericColumn"], width=96)
+    elif col == "change_pct":
+        gb.configure_column(col, header_name=label, headerTooltip=tip,
+                            valueFormatter=_JS_PERCENT_SIGNED, cellStyle=_JS_CHANGE_STYLE,
+                            type=["numericColumn"], width=104)
     elif col == "why":
         gb.configure_column(col, header_name=label, headerTooltip=tip, minWidth=260,
                             flex=1, sortable=False, tooltipField=col)
@@ -237,8 +285,11 @@ def _configure_aggrid_column(gb, col: str, desc: dict) -> None:
                             valueFormatter=_JS_YESNO, width=100)
     else:  # text (symbol / name / sector / extension badge)
         widths = {"symbol": 88, "name": 150, "sector": 130}
+        # Pin the symbol column so it stays visible while scrolling the wider
+        # Detailed view (finance-site convention).
+        pinned = "left" if col == "symbol" else None
         gb.configure_column(col, header_name=label, headerTooltip=tip,
-                            width=widths.get(col, 120))
+                            width=widths.get(col, 120), pinned=pinned)
 
 
 def _render_results_grid(table_df: pd.DataFrame, profile) -> "str | None":
@@ -271,7 +322,12 @@ def _render_results_grid(table_df: pd.DataFrame, profile) -> "str | None":
         fit_columns_on_grid_load=False,
         theme="streamlit",
         height=min(540, 56 + 30 * max(1, n)),
-        key="results_grid",
+        # Key the grid to its column SET: st_aggrid persists client-side column
+        # order per widget key, so a fixed key would carry the Compact order over
+        # when toggling to Detailed (or switching profiles). A column-derived key
+        # remounts the grid on any column change, so each view renders column_order
+        # cleanly. Stable within a session for an unchanged column set.
+        key=f"results_grid_{abs(hash(tuple(table_df.columns)))}",
     )
     sel = getattr(resp, "selected_rows", None)
     if isinstance(sel, pd.DataFrame):
@@ -302,20 +358,20 @@ with st.sidebar:
     )
     selected = st.session_state.get("nl_provider", agent.DEFAULT_PROVIDER)
     prov = agent.PROVIDERS[selected]
-    if agent.agent_available(selected):
-        st.caption(
-            f"LLM-backed ({prov.label}) — interprets your request, then runs the scan."
-        )
-    elif prov.env_key:
-        st.caption(
-            f"{prov.label}: set {prov.env_key} + install the SDK for LLM mode "
-            "— using the offline parser."
-        )
+    # Self-diagnosing status: say whether the backend is live and, if not, exactly
+    # WHY (missing key / missing SDK) instead of silently using the offline parser.
+    _ok, _reason = agent.availability_status(selected)
+    if _ok:
+        st.caption(f"✓ LLM-backed ({prov.label}) — interprets your request, then runs the scan.")
     else:
-        st.caption(
-            f"{prov.label}: needs a local Ollama server + the 'openai' package "
-            "— using the offline parser."
-        )
+        # The reason already names the exact missing piece (which key env var, or
+        # the SDK + pip command); the hint adds the non-obvious secrets.toml option.
+        st.caption(f"✗ {prov.label}: {_reason}. Using the offline rule-based parser.")
+        if prov.env_key:
+            st.caption(
+                "Tip: the key can live in your shell env OR `.streamlit/secrets.toml` "
+                "(see `.streamlit/secrets.toml.example`)."
+            )
     interpret_clicked = st.button("Interpret & run", key="nl_btn")
     st.divider()
 
@@ -332,6 +388,18 @@ with st.sidebar:
 
     # Asset-class toggle: a disabled no-op stub (crypto is v2).
     st.radio("Asset class", ["US equities"], disabled=True, help="Crypto arrives in v2.")
+
+    # Results-table density (a display preference; restyles the last scan, no refetch).
+    # Compact = the lean finance-site view (price, daily change, tactical readouts);
+    # Detailed reveals this profile's signal columns.
+    st.radio(
+        "Table density",
+        ["Compact", "Detailed"],
+        key="table_density",
+        horizontal=True,
+        help="Compact: rank, symbol, price, daily change, and the tactical readouts. "
+             "Detailed: also shows this profile's signal columns.",
+    )
 
     # The production S&P 500 universe is 503 names, so this is min 5 / max 503 /
     # default 25 as specced. The bounds are clamped only so a degenerate tiny
@@ -491,25 +559,18 @@ def _render_results(
         if banner:
             st.warning(banner)
 
-    table_df = display.table_view(view, profile)
-    col_order = display.column_order(profile, view)
+    # Density (Compact ↔ Detailed) is a display preference owned by the sidebar.
+    density = "detailed" if st.session_state.get("table_density") == "Detailed" else "compact"
+    table_df = display.table_view(view, profile, density=density)
+    col_order = display.column_order(profile, view, density=density)
     # The per-ticker external links are buttons in the detail panel; this AgGrid
     # build can't render link cells, so drop them from the grid.
     col_order = [c for c in col_order if c not in ("tv_url", "yf_url")]
-    # Append the two universe-wide TA columns (owned here, not by column_order):
-    # Extension renders as badge TEXT (emoji = the only per-cell color cue);
-    # In buy zone stays a raw bool that the grid formats Yes/No.
-    if "extension_state" in view.columns:
-        table_df["extension_state"] = view["extension_state"].map(display.extension_badge).values
-        if "extension_state" not in col_order:
-            col_order.append("extension_state")
-    if "in_buy_zone" in view.columns:
-        table_df["in_buy_zone"] = view["in_buy_zone"].values
-        if "in_buy_zone" not in col_order:
-            col_order.append("in_buy_zone")
-    # Keep the long 'why' narrative as the FINAL column, then realise the order.
-    if "why" in col_order:
-        col_order = [c for c in col_order if c != "why"] + ["why"]
+    # column_order now owns the two universe-wide TA columns; we only re-render the
+    # Extension cell as badge TEXT (emoji = the only per-cell color cue). In buy
+    # zone stays a raw bool the grid formats Yes/No.
+    if "extension_state" in table_df.columns:
+        table_df["extension_state"] = table_df["extension_state"].map(display.extension_badge)
     table_df = table_df[[c for c in col_order if c in table_df.columns]]
 
     st.caption("Double-click a row to inspect it — or use the selector below the table.")
@@ -557,6 +618,34 @@ def _render_results(
     reasons = row["reasons"]
 
     st.subheader(f"Why {symbol} ranks #{int(row['rank'])}")
+
+    # Company header card: the headline price/volatility/size numbers a mainstream
+    # finance site leads with, read straight off the in-hand row (all fail-soft to
+    # "—"). Daily change uses st.metric's delta for native green/red.
+    _price_col, _chg_col, _atr_col, _cap_col = st.columns(4)
+    _price_col.metric("Price", display.format_price(row.get("price")))
+    _chg_str = display.format_signed_pct(row.get("change_pct"))
+    _chg_col.metric(
+        "Daily change", _chg_str,
+        delta=_chg_str if _chg_str != "—" else None,
+    )
+    _atr_str = display.format_price(row.get("atr"))
+    _atr_pct_str = display.format_signed_pct(row.get("atr_pct"))
+    if _atr_str != "—" and _atr_pct_str != "—":
+        _atr_str = f"{_atr_str} ({_atr_pct_str})"
+    _atr_col.metric("ATR (14)", _atr_str)
+    _cap_col.metric("Market cap", display.format_market_cap(row.get("market_cap")))
+
+    # Industry (finer than sector) + the long "what the company does" prose, each
+    # shown only when present so a thin-data ticker doesn't render empty chrome.
+    _industry = row.get("industry")
+    if isinstance(_industry, str) and _industry.strip():
+        st.caption(f"Industry: {_industry.strip()}")
+    _summary = row.get("business_summary")
+    if isinstance(_summary, str) and _summary.strip():
+        with st.expander("What the company does"):
+            st.write(_summary.strip())
+
     st.metric("Fit score", f"{display.fit_score(row['score'])} / 100", help=display.SCORE_HELP)
 
     # Jump straight out to an external chart / quote for the inspected ticker.

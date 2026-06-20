@@ -83,6 +83,13 @@ FEATURE_LABELS: "dict[str, str]" = {
     "extension_score": "Extension Score",
     "in_buy_zone": "In Buy Zone",
     "dist_to_buy_zone_pct": "Distance To Buy Zone",
+    # headline price + company (compact table + the Stage-3 detail card)
+    "price": "Price",
+    "change_pct": "Daily Change",
+    "atr": "ATR (14)",
+    "atr_pct": "ATR %",
+    "market_cap": "Market Cap",
+    "industry": "Industry",
 }
 
 # Plain-English, cell-sized definition for every feature in FEATURE_LABELS. Used
@@ -117,6 +124,13 @@ FEATURE_DESCRIPTIONS: "dict[str, str]" = {
     "extension_score": "Overextension score (0–1); higher = more stretched above trend.",
     "in_buy_zone": "Whether the last close sits inside the descriptive buy-zone band.",
     "dist_to_buy_zone_pct": "Signed gap from the last close to the buy zone (0% if inside).",
+    # headline price + company
+    "price": "Most recent closing price.",
+    "change_pct": "Percent change from the prior close (green up / red down).",
+    "atr": "Average True Range (14-day): the typical daily price move, in dollars.",
+    "atr_pct": "ATR as a percent of price — the typical daily move, normalized.",
+    "market_cap": "Total market value of the company's shares.",
+    "industry": "The company's specific industry (finer than its sector).",
 }
 
 # Column / score "?" tooltip copy. Kept here (pure, unit-testable) so app.py can
@@ -207,7 +221,7 @@ _BOOL_FEATURES = frozenset({"sma_stacked_20_50_150", "in_buy_zone"})
 # distinct from _PERCENT_FEATURES (one decimal) and the signed buy-zone distance.
 _PERCENT2_FEATURES = frozenset({"extension_score"})
 # Signed-percent fractions: a leading "+"/"-" matters (gap above vs below a band).
-_SIGNED_PERCENT_FEATURES = frozenset({"dist_to_buy_zone_pct"})
+_SIGNED_PERCENT_FEATURES = frozenset({"dist_to_buy_zone_pct", "change_pct"})
 
 # The leading, human-ordered columns shown before a profile's own signals. The
 # synthetic ``fit`` (0..100, derived from ``score``) is inserted right after these,
@@ -462,19 +476,27 @@ def _with_derived_columns(df: pd.DataFrame, profile=None) -> pd.DataFrame:
 
 
 # --- table column selection ---------------------------------------------
-def column_order(profile: Profile, df: pd.DataFrame) -> "list[str]":
-    """Ordered visible-column names for the results table.
+def column_order(profile: Profile, df: pd.DataFrame, *, density: str = "compact") -> "list[str]":
+    """Ordered visible-column names for the results table, by display ``density``.
 
-    Lead columns (``rank, symbol, name, sector``), then the synthetic ``fit``
-    (0..100, taking the visible score slot), then the two synthetic per-ticker
-    link columns (``tv_url``, ``yf_url``), then the profile's RAW signal feature
-    columns (intersected with ``df`` so a missing column is just skipped, never a
-    KeyError), then — SWING ONLY (flag gate + column present) —
-    ``earnings_in_window`` and ``days_to_earnings``, and finally the synthetic
-    ``why`` narrative column LAST. NEVER includes ``reasons`` or any ``*_pct``
-    percentile column (those are Arrow-noisy / internal). This is the single
-    source of truth for both :func:`table_view` and the ``column_order=`` arg
-    passed to the grid.
+    Shared prefix (both densities): lead columns (``rank, symbol, name, sector``),
+    then the synthetic ``fit`` (0..100, taking the visible score slot), the two
+    synthetic per-ticker link columns (``tv_url``, ``yf_url``), then the headline
+    ``price`` and ``change_pct`` right after the link block.
+
+    - ``density="compact"`` (default, finance-site lean view): the shared prefix,
+      then the two universe-wide tactical readouts (``extension_state``,
+      ``in_buy_zone``) — and that's it. No per-profile signal columns.
+    - ``density="detailed"``: the shared prefix, then the profile's RAW signal
+      feature columns, then — SWING ONLY (flag gate + column present) —
+      ``earnings_in_window`` / ``days_to_earnings``, then the same two tactical
+      readouts.
+
+    The synthetic ``why`` narrative column is ALWAYS last. Columns are intersected
+    with ``df`` (a missing column is skipped, never a KeyError). NEVER includes
+    ``reasons`` or any ``*_pct`` percentile column. This is the single source of
+    truth — including the two tactical columns, which were previously appended in
+    ``app.py`` — for both :func:`table_view` and the grid's ``column_order``.
     """
     cols = [c for c in _LEAD_VISIBLE if df is None or c in df.columns]
 
@@ -483,25 +505,39 @@ def column_order(profile: Profile, df: pd.DataFrame) -> "list[str]":
     if (df is None or "score" in df.columns) and "fit" not in cols:
         cols.append("fit")
 
-    # Per-ticker external-link columns sit right after the fit/identity block
-    # (before the signals). Synthesised from `symbol`, so gate on it.
+    # Per-ticker external-link columns sit right after the fit/identity block.
+    # Synthesised from `symbol`, so gate on it.
     if df is None or "symbol" in df.columns:
         cols += [c for c in _LINK_COLUMNS if c not in cols]
 
     seen = set(cols)
-    for spec in profile.signals:
-        feat = spec.feature
-        if feat in seen:
-            continue
-        if df is None or feat in df.columns:
-            cols.append(feat)
-            seen.add(feat)
 
-    if _swing_earnings_enabled(profile, df if df is not None else pd.DataFrame()):
-        for extra in ("earnings_in_window", "days_to_earnings"):
-            if extra not in seen and (df is None or extra in df.columns):
-                cols.append(extra)
-                seen.add(extra)
+    # Headline price scalars sit right after the link block, in BOTH densities.
+    for extra in ("price", "change_pct"):
+        if extra not in seen and (df is None or extra in df.columns):
+            cols.append(extra)
+            seen.add(extra)
+
+    # Detailed-only: reveal the profile's signal columns (+ swing earnings).
+    if density == "detailed":
+        for spec in profile.signals:
+            feat = spec.feature
+            if feat in seen:
+                continue
+            if df is None or feat in df.columns:
+                cols.append(feat)
+                seen.add(feat)
+        if _swing_earnings_enabled(profile, df if df is not None else pd.DataFrame()):
+            for extra in ("earnings_in_window", "days_to_earnings"):
+                if extra not in seen and (df is None or extra in df.columns):
+                    cols.append(extra)
+                    seen.add(extra)
+
+    # Universe-wide tactical readouts in BOTH densities (single source of truth).
+    for extra in ("extension_state", "in_buy_zone"):
+        if extra not in seen and (df is None or extra in df.columns):
+            cols.append(extra)
+            seen.add(extra)
 
     # Synthetic per-row narrative LAST (from `reasons`); kept at the end so the
     # long text never crowds the numeric columns.
@@ -511,16 +547,16 @@ def column_order(profile: Profile, df: pd.DataFrame) -> "list[str]":
     return cols
 
 
-def table_view(df: pd.DataFrame, profile: Profile) -> pd.DataFrame:
+def table_view(df: pd.DataFrame, profile: Profile, *, density: str = "compact") -> pd.DataFrame:
     """A NEW frame with only the curated, human-ordered scalar columns.
 
-    Selects exactly :func:`column_order` from ``df`` — augmented with the
-    synthetic ``tv_url``/``yf_url`` link columns (so it can never include
-    ``reasons`` or a ``*_pct`` column) — and returns a copy. Fail-soft: a result
-    frame missing one of the profile's signal columns still returns the
+    Selects exactly :func:`column_order` (at the given ``density``) from ``df`` —
+    augmented with the synthetic ``tv_url``/``yf_url`` link columns (so it can never
+    include ``reasons`` or a ``*_pct`` column) — and returns a copy. Fail-soft: a
+    result frame missing one of the profile's signal columns still returns the
     intersection without raising.
     """
-    order = column_order(profile, df)
+    order = column_order(profile, df, density=density)
     src = _with_derived_columns(df, profile) if df is not None else df
     cols = [c for c in order if df is not None and c in src.columns]
     return src[cols].copy()
@@ -596,6 +632,17 @@ def column_config_spec(profile: Profile) -> "dict[str, dict]":
     }
     spec["in_buy_zone"] = {
         "kind": "checkbox", "label": "In Buy Zone", "help": BUY_ZONE_HELP,
+    }
+    # Headline price columns (present for every profile, both densities). `price`
+    # is a plain number app.py renders with a leading "$"; `change_pct` is a SIGNED
+    # percent app.py colours green/red. Both carry their feature-map tooltip.
+    spec["price"] = {
+        "kind": "number", "label": feature_label("price"), "format": "%.2f",
+        "help": feature_description("price"),
+    }
+    spec["change_pct"] = {
+        "kind": "percent", "label": feature_label("change_pct"), "format": "percent",
+        "signed": True, "help": feature_description("change_pct"),
     }
     return spec
 
@@ -680,6 +727,47 @@ def format_signed_pct(x) -> str:
     if not np.isfinite(v):
         return _MISSING
     return f"{v * 100:+.1f}%"
+
+
+def format_price(x) -> str:
+    """A ``$``-prefixed price, two decimals + thousands separators (fail-soft).
+
+    ``195.0 -> "$195.00"``, ``1234.5 -> "$1,234.50"``; missing / non-finite -> ``"—"``.
+    """
+    if _is_missing(x):
+        return _MISSING
+    try:
+        v = float(x)
+    except (TypeError, ValueError):
+        return _MISSING
+    if not np.isfinite(v):
+        return _MISSING
+    return f"${v:,.2f}"
+
+
+# Human-readable market-cap units, largest first.
+_CAP_UNITS = (("T", 1e12), ("B", 1e9), ("M", 1e6))
+
+
+def format_market_cap(x) -> str:
+    """Market cap in human units (fail-soft): ``1.23e12 -> "$1.2T"``,
+    ``3.45e11 -> "$345.0B"``, ``1.2e7 -> "$12.0M"``.
+
+    Below $1M falls back to a plain ``"$12,345"``. Missing / non-finite / ``<= 0``
+    (a degenerate or unknown cap) -> ``"—"``.
+    """
+    if _is_missing(x):
+        return _MISSING
+    try:
+        v = float(x)
+    except (TypeError, ValueError):
+        return _MISSING
+    if not np.isfinite(v) or v <= 0:
+        return _MISSING
+    for suffix, scale in _CAP_UNITS:
+        if v >= scale:
+            return f"${v / scale:.1f}{suffix}"
+    return f"${v:,.0f}"
 
 
 _EXTENSION_BADGES: "dict[str, str]" = {
@@ -1124,13 +1212,14 @@ def radar_svg(spec, size: int = 320) -> str:
 def export_frame(df: pd.DataFrame, profile: Profile) -> pd.DataFrame:
     """A human-readable frame for CSV download (no link-URL / internal columns).
 
-    Reuses :func:`table_view` (so it carries ``fit``, the profile's signals, any
-    swing earnings columns, and the ``why`` narrative) and drops the ``tv_url`` /
-    ``yf_url`` link columns — leaving exactly what the user sees, numbers kept raw
-    for downstream analysis. Fail-soft on a degenerate frame (returns the
-    intersection without raising).
+    Reuses :func:`table_view` at the DETAILED density — so the CSV always carries
+    ``fit``, the headline price columns, the profile's signals, any swing earnings
+    columns, the tactical readouts, and the ``why`` narrative regardless of the
+    on-screen density toggle (the download is for downstream analysis, so it stays
+    the full picture) — and drops the ``tv_url`` / ``yf_url`` link columns. Numbers
+    kept raw. Fail-soft on a degenerate frame (returns the intersection).
     """
-    view = table_view(df, profile)
+    view = table_view(df, profile, density="detailed")
     drop = [c for c in _LINK_COLUMNS if c in view.columns]
     return view.drop(columns=drop) if drop else view
 
