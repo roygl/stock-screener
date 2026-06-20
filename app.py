@@ -215,12 +215,28 @@ with st.sidebar:
         key="nl_query",
         placeholder="e.g. top 20 momentum tech names, high conviction",
     )
-    if agent.agent_available():
-        st.caption("LLM-backed (claude) — interprets your request, then runs the scan.")
+    st.radio(
+        "Engine",
+        options=list(agent.PROVIDERS),
+        index=list(agent.PROVIDERS).index(agent.DEFAULT_PROVIDER),
+        format_func=lambda pid: agent.PROVIDERS[pid].label,
+        key="nl_provider",
+    )
+    selected = st.session_state.get("nl_provider", agent.DEFAULT_PROVIDER)
+    prov = agent.PROVIDERS[selected]
+    if agent.agent_available(selected):
+        st.caption(
+            f"LLM-backed ({prov.label}) — interprets your request, then runs the scan."
+        )
+    elif prov.env_key:
+        st.caption(
+            f"{prov.label}: set {prov.env_key} + install the SDK for LLM mode "
+            "— using the offline parser."
+        )
     else:
         st.caption(
-            "Offline rule-based parser (set ANTHROPIC_API_KEY + install anthropic "
-            "for LLM mode)."
+            f"{prov.label}: needs a local Ollama server + the 'openai' package "
+            "— using the offline parser."
         )
     interpret_clicked = st.button("Interpret & run", key="nl_btn")
     st.divider()
@@ -312,6 +328,7 @@ if interpret_clicked:
     req = agent.parse_query(
         st.session_state.get("nl_query", ""),
         universe_sectors=universe_sectors,
+        provider=st.session_state.get("nl_provider"),
     )
     _stage_nl_request(req)
     st.rerun()

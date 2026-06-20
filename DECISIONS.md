@@ -4,6 +4,32 @@ Newest first. Each entry: the decision, and *why*, so nothing gets re-argued lat
 
 ---
 
+2026-06-20: **The NL agent's LLM backend is now SWAPPABLE via a provider registry — Anthropic native plus an
+OpenAI-compatible family over one optional `openai` SDK.** Generalizes the Anthropic-only agent (`screener/agent.py`)
+so the user can pick the engine and so adding backends is a one-line edit. The non-obvious choices:
+- **Cheap multi-backend via an OpenAI-compatible base path, not N native SDKs.** A data-driven `PROVIDERS` registry
+  (frozen `Provider` dataclass: `id/label/kind/env_key/default_model/base_url/model_env`) holds 6 entries —
+  `anthropic` (kind `anthropic`, native SDK) + `openai`, `xai` (Grok), `gemini`, `mistral`, `ollama` (all kind
+  `openai`). The five OpenAI-compatible ones ride the SINGLE `openai` SDK and differ ONLY by `base_url` / env-var /
+  model id, so the roster is **6 backends from just 2 optional deps** (`anthropic` already present + new `openai>=1.40`)
+  and adding/dropping one is a single registry edit. Selection is a single-select sidebar **radio** ("Engine"),
+  defaulting to `anthropic` so today's behavior is byte-for-byte preserved.
+- **Env-vars-only credentials — no key UI, no session-state secret threading.** Keys come strictly from the
+  environment (per-provider `env_key`; Ollama is keyless and special-cased with an `"ollama"` api_key placeholder +
+  `SCREENER_OLLAMA_BASE_URL` override); model ids are registry-isolated and overridable via each provider's `model_env`
+  or the existing global `SCREENER_AGENT_MODEL`. This keeps the diff small and keeps secrets out of Streamlit
+  session state. `_resolve_provider` (explicit > `SCREENER_AGENT_PROVIDER` > default, unknown → default, never raises)
+  and `_resolve_model` (explicit > per-provider `model_env` > global > provider default) do the wiring.
+- **Offline-first, import-cheap, and the single safety layer are UNCHANGED — the engine stays the source of truth.**
+  The module still imports only stdlib at top (`json` added) and NEVER imports streamlit; BOTH SDKs stay lazy *inside*
+  their `_llm_extract` branch, and `agent_available(provider=None)` still probes via `importlib.util.find_spec` (no
+  import) — so `from screener import agent` works with NEITHER SDK installed and no keys. Both paths emit an identical
+  strict `set_screen` contract (shared `_set_screen_schema`: every property required, `additionalProperties` false, NO
+  numeric min/max), funnel their raw dict through the one UNCHANGED `validate_request` clamp/coerce layer, and on ANY
+  unavailable-provider/error degrade to the deterministic `rule_based_parse`. The transparency prefix is now
+  provider-aware (`LLM (openai): …`); the offline path stays `Rule-based: …`. `SYSTEM_PROMPT` (describes, never
+  advises) is shared and untouched; the cold-scan guard and single engine call site are not touched.
+
 2026-06-20: **Tactical TA readouts (DONE) — explicit "Buy zone", support & resistance, and overextension/parabolic;
 this RELAXES "describe, don't advise" to "no execution + no sell/exit management, but an educational entry zone is now
 shown."** The screener now answers three tactical per-ticker questions — where is the buy zone, is the stock parabolic,
