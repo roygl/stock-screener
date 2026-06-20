@@ -27,7 +27,7 @@ from screener.ui.grid import render_results_grid
 # --- main: four mutually-exclusive states --------------------------------
 def render_pre_scan() -> None:
     """PRE_SCAN: no scan yet. The cold-scan guard — no engine call, no table."""
-    st.info("Pick a profile and universe size in the sidebar, then press Run scan.")
+    st.info("Pick a profile up top (universe size lives in ⚙ Settings), then press Run ▶.")
     st.markdown("**Profiles**")
     st.markdown(
         "\n".join(f"- **{PROFILES[k].label}**" for k in PROFILES)
@@ -142,9 +142,12 @@ def render_state_switch() -> None:
                 profile=profile,
                 extended_hidden=st.session_state.get("f_extended_hidden", False),
                 in_buy_zone_only=st.session_state.get("f_in_buy_zone_only", False),
+                in_watchlist_only=st.session_state.get("f_in_watchlist_only", False),
+                watchlist=st.session_state.get("watchlist", set()),
             )
             if len(view) == 0:
-                # FILTERED_EMPTY: filters hid every row (filters stay in the sidebar).
+                # FILTERED_EMPTY: filters hid every row (the text filter is the header
+                # search box; sector / min-score / checkboxes live in the sidebar).
                 st.caption(
                     display.scan_context_line(profile.label, n_names, cache_day, len(df))
                 )

@@ -24,17 +24,15 @@ import streamlit as st
 # st.set_page_config MUST be the first Streamlit call (Streamlit enforces this).
 st.set_page_config(page_title="Stock Screener", page_icon="📈", layout="wide")
 
-from screener.ui import events_panel, nl_state, persistence, scan, secrets_bridge, sidebar, transparency
+from screener.ui import events_panel, header, heatmap_panel, nl_state, persistence, scan, secrets_bridge, sidebar, transparency
 from screener.ui.results_view import render_state_switch
 from screener.universe import load_universe
 
 # Bridge any provider key from .streamlit/secrets.toml into os.environ BEFORE the
-# sidebar reads provider availability.
+# header reads provider availability.
 secrets_bridge.bridge_secrets_to_env()
 
-# --- title + global disclaimer caption -----------------------------------
-st.title("📈 Stock Screener")
-st.caption("US large-cap · end-of-day · ranks and describes · educational buy zone, not advice")
+# The wordmark + global disclaimer caption now live in the sticky header.
 
 # --- load the universe (surface failures, don't crash) -------------------
 try:
@@ -57,10 +55,21 @@ remembered = persistence.apply_remembered(universe)
 # widget exists).
 nl_state.apply_pending(universe)
 
-# Sidebar renders BEFORE the scan handler and returns the three action flags.
-interpret_clicked, run_clicked, clear_clicked = sidebar.render_sidebar(universe)
+# A staged view switch (e.g. the heatmap's sector drill-down) is applied before the
+# header creates the "view" widget, mirroring the NL _pending_* staging (you cannot
+# set a widget key after its widget exists).
+if "_pending_view" in st.session_state:
+    st.session_state["view"] = st.session_state.pop("_pending_view")
 
-# Persist the current sidebar selections back to the browser (no-op if unchanged).
+# The sticky header renders BEFORE the scan handler and returns the three action
+# flags the downstream handlers consume (it owns the nav, search, profile, engine,
+# and universe-size widget keys, all seeded above so they survive a rerun).
+interpret_clicked, run_clicked, clear_clicked = header.render_header(universe)
+
+# The slim sidebar (Filters-only) renders after the header; it returns nothing.
+sidebar.render_sidebar(universe)
+
+# Persist the current selections back to the browser (no-op if unchanged).
 persistence.remember_current(remembered, universe)
 
 # Phase 1 of the NL flow: stage the interpreted request, then rerun (no engine call).
@@ -69,14 +78,21 @@ nl_state.handle_interpret(interpret_clicked, universe_sectors)
 # Phase 2 / manual: the ONE engine call site; ends in st.rerun() when it fires.
 scan.run_scan_if_requested(run_clicked, clear_clicked)
 
-# Pull-based, on-open economic-event surface (no server cron on the host): the
-# next high-impact US macro releases with countdowns + impact tags, rendered every
-# run from the bundled public-domain CSV (memoized per cache_day). Sits above the
-# scan states so event risk is visible before any scan exists.
-events_panel.render_events_panel()
-
-# NL transparency banner, above the four-state switch.
-transparency.render_nl_banner()
-
-# The four mutually-exclusive main states.
-render_state_switch()
+# --- main body: branch on the nav view -----------------------------------
+# segmented_control can deselect to None in single mode, so read it None-safe.
+view = st.session_state.get("view") or "Screener"
+if view == "Screener":
+    # NL transparency banner, above the four-state switch.
+    transparency.render_nl_banner()
+    # The four mutually-exclusive main states.
+    render_state_switch()
+elif view == "Heatmap":
+    # Descriptive sector treemap over the cached scan (no engine call): tiles sized by
+    # combined market cap, coloured by 3-month momentum, with a one-click drill-down
+    # that stages a sector filter + view switch back into the Screener.
+    heatmap_panel.render_heatmap_panel()
+elif view == "Events":
+    # Pull-based, on-open economic-event surface (no server cron on the host): the
+    # next high-impact US macro releases with countdowns + impact tags, rendered from
+    # the bundled public-domain CSV (memoized per cache_day), expanded as its own view.
+    events_panel.render_events_panel(expanded=True)
