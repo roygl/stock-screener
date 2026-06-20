@@ -27,10 +27,14 @@ def render_sidebar(universe) -> "tuple[bool, bool, bool]":
             key="nl_query",
             placeholder="e.g. top 20 momentum tech names, high conviction",
         )
+        # Initialize-then-no-default: seed the key once (so a remembered choice from
+        # localStorage or a staged NL value survives) and pass NO index=, the
+        # canonical pattern that avoids Streamlit's default-vs-session_state warning.
+        if "nl_provider" not in st.session_state:
+            st.session_state["nl_provider"] = agent.DEFAULT_PROVIDER
         st.radio(
             "Engine",
             options=list(agent.PROVIDERS),
-            index=list(agent.PROVIDERS).index(agent.DEFAULT_PROVIDER),
             format_func=lambda pid: agent.PROVIDERS[pid].label,
             key="nl_provider",
         )

@@ -24,7 +24,7 @@ import streamlit as st
 # st.set_page_config MUST be the first Streamlit call (Streamlit enforces this).
 st.set_page_config(page_title="Stock Screener", page_icon="📈", layout="wide")
 
-from screener.ui import nl_state, scan, secrets_bridge, sidebar, transparency
+from screener.ui import nl_state, persistence, scan, secrets_bridge, sidebar, transparency
 from screener.ui.results_view import render_state_switch
 from screener.universe import load_universe
 
@@ -47,6 +47,11 @@ except Exception as exc:  # noqa: BLE001 - show the failure in the UI, not a tra
 # agent can canonicalize sector names before any scan exists.
 universe_sectors = sorted(universe["sector"].dropna().unique().tolist())
 
+# Seed any choices remembered in the browser (localStorage) into the widget keys
+# BEFORE the widgets render. Runs before apply_pending so an explicit NL Interpret
+# still wins for this run. Returns the localStorage handle for the write-back below.
+remembered = persistence.apply_remembered(universe)
+
 # Apply any staged NL request into the widget keys BEFORE the sidebar creates the
 # widgets that own those keys (Streamlit forbids setting a widget key after its
 # widget exists).
@@ -54,6 +59,9 @@ nl_state.apply_pending(universe)
 
 # Sidebar renders BEFORE the scan handler and returns the three action flags.
 interpret_clicked, run_clicked, clear_clicked = sidebar.render_sidebar(universe)
+
+# Persist the current sidebar selections back to the browser (no-op if unchanged).
+persistence.remember_current(remembered, universe)
 
 # Phase 1 of the NL flow: stage the interpreted request, then rerun (no engine call).
 nl_state.handle_interpret(interpret_clicked, universe_sectors)
