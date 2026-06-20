@@ -189,6 +189,22 @@ _JS_PERCENT = JsCode(
     "function(p){ return (p.value==null||isNaN(p.value)) ? '—' : "
     "(p.value*100).toFixed(1) + '%'; }"
 )
+# Headline-price formatters: a "$"-prefixed money cell and a SIGNED percent
+# (fraction ×100 with an explicit +/-), plus a green/red colour for the daily
+# change — finance-site convention. Style stays a plain object (the file's
+# "valueFormatter + cellStyle only, never cellRenderer" rule).
+_JS_MONEY = JsCode(
+    "function(p){ return (p.value==null||isNaN(p.value)) ? '—' : "
+    "'$' + Number(p.value).toFixed(2); }"
+)
+_JS_PERCENT_SIGNED = JsCode(
+    "function(p){ if(p.value==null||isNaN(p.value)) return '—'; "
+    "var v=p.value*100; return (v>=0?'+':'') + v.toFixed(2) + '%'; }"
+)
+_JS_CHANGE_STYLE = JsCode(
+    "function(p){ if(p.value==null||isNaN(p.value)) return {}; "
+    "return {color: p.value >= 0 ? '#188038' : '#d93025'}; }"
+)
 _JS_FIT_STYLE = JsCode(
     "function(p){"
     " if(p.value==null||isNaN(p.value)) return {};"
@@ -217,6 +233,13 @@ def _configure_aggrid_column(gb, col: str, desc: dict) -> None:
         gb.configure_column(col, header_name=label, headerTooltip=tip,
                             valueFormatter=_js_number(0), cellStyle=_JS_FIT_STYLE,
                             type=["numericColumn"], width=86)
+    elif col == "price":
+        gb.configure_column(col, header_name=label, headerTooltip=tip,
+                            valueFormatter=_JS_MONEY, type=["numericColumn"], width=96)
+    elif col == "change_pct":
+        gb.configure_column(col, header_name=label, headerTooltip=tip,
+                            valueFormatter=_JS_PERCENT_SIGNED, cellStyle=_JS_CHANGE_STYLE,
+                            type=["numericColumn"], width=104)
     elif col == "why":
         gb.configure_column(col, header_name=label, headerTooltip=tip, minWidth=260,
                             flex=1, sortable=False, tooltipField=col)
@@ -237,8 +260,11 @@ def _configure_aggrid_column(gb, col: str, desc: dict) -> None:
                             valueFormatter=_JS_YESNO, width=100)
     else:  # text (symbol / name / sector / extension badge)
         widths = {"symbol": 88, "name": 150, "sector": 130}
+        # Pin the symbol column so it stays visible while scrolling the wider
+        # Detailed view (finance-site convention).
+        pinned = "left" if col == "symbol" else None
         gb.configure_column(col, header_name=label, headerTooltip=tip,
-                            width=widths.get(col, 120))
+                            width=widths.get(col, 120), pinned=pinned)
 
 
 def _render_results_grid(table_df: pd.DataFrame, profile) -> "str | None":
@@ -332,6 +358,18 @@ with st.sidebar:
 
     # Asset-class toggle: a disabled no-op stub (crypto is v2).
     st.radio("Asset class", ["US equities"], disabled=True, help="Crypto arrives in v2.")
+
+    # Results-table density (a display preference; restyles the last scan, no refetch).
+    # Compact = the lean finance-site view (price, daily change, tactical readouts);
+    # Detailed reveals this profile's signal columns.
+    st.radio(
+        "Table density",
+        ["Compact", "Detailed"],
+        key="table_density",
+        horizontal=True,
+        help="Compact: rank, symbol, price, daily change, and the tactical readouts. "
+             "Detailed: also shows this profile's signal columns.",
+    )
 
     # The production S&P 500 universe is 503 names, so this is min 5 / max 503 /
     # default 25 as specced. The bounds are clamped only so a degenerate tiny
@@ -491,25 +529,18 @@ def _render_results(
         if banner:
             st.warning(banner)
 
-    table_df = display.table_view(view, profile)
-    col_order = display.column_order(profile, view)
+    # Density (Compact ↔ Detailed) is a display preference owned by the sidebar.
+    density = "detailed" if st.session_state.get("table_density") == "Detailed" else "compact"
+    table_df = display.table_view(view, profile, density=density)
+    col_order = display.column_order(profile, view, density=density)
     # The per-ticker external links are buttons in the detail panel; this AgGrid
     # build can't render link cells, so drop them from the grid.
     col_order = [c for c in col_order if c not in ("tv_url", "yf_url")]
-    # Append the two universe-wide TA columns (owned here, not by column_order):
-    # Extension renders as badge TEXT (emoji = the only per-cell color cue);
-    # In buy zone stays a raw bool that the grid formats Yes/No.
-    if "extension_state" in view.columns:
-        table_df["extension_state"] = view["extension_state"].map(display.extension_badge).values
-        if "extension_state" not in col_order:
-            col_order.append("extension_state")
-    if "in_buy_zone" in view.columns:
-        table_df["in_buy_zone"] = view["in_buy_zone"].values
-        if "in_buy_zone" not in col_order:
-            col_order.append("in_buy_zone")
-    # Keep the long 'why' narrative as the FINAL column, then realise the order.
-    if "why" in col_order:
-        col_order = [c for c in col_order if c != "why"] + ["why"]
+    # column_order now owns the two universe-wide TA columns; we only re-render the
+    # Extension cell as badge TEXT (emoji = the only per-cell color cue). In buy
+    # zone stays a raw bool the grid formats Yes/No.
+    if "extension_state" in table_df.columns:
+        table_df["extension_state"] = table_df["extension_state"].map(display.extension_badge)
     table_df = table_df[[c for c in col_order if c in table_df.columns]]
 
     st.caption("Double-click a row to inspect it — or use the selector below the table.")
