@@ -17,7 +17,7 @@ step — it does not replace charting, broker execution, or live alerting.
 - **Caching:** local cache layer so we don't hammer Yahoo
 
 ## Active task
-> Post-MVP: swappable LLM agent backend (DONE) — provider registry in `screener/agent.py` (Anthropic native + an OpenAI-compatible family: OpenAI/xAI/Gemini/Mistral/Ollama over one optional `openai` SDK), single-select sidebar radio, env-vars-only creds; offline-first + the single `validate_request` safety layer unchanged. Prior: tactical TA readouts (DONE — buy zone + support/resistance + overextension/parabolic, EOD 1w/1d/1mo, also universe-wide). Backlog: universe-wide chart-pattern screening. See PLAN.md.
+> Declutter + surface + Gemini (DONE, branch `feat/declutter-surface-gemini`) — surfaced price/daily-change/ATR/ATR%/market-cap/industry/business-summary; Compact↔Detailed table (pinned symbol, $ price, signed green/red change%); company header card in the detail panel; Gemini self-diagnosing (GOOGLE_API_KEY alias, `availability_status`, `.streamlit/secrets.toml`→env bridge, visible fallback reason). **Deferred:** Stage 5 refactor (split `screener/display.py` → `screener/display/` package and `app.py` UI → `ui/`) — behavior-preserving, do solo to avoid merge conflicts. Prior: swappable LLM agent backend (DONE); tactical TA readouts (DONE). Backlog: universe-wide chart-pattern screening; Stage-5 refactor. See PLAN.md.
 
 ## Key decisions (full log in DECISIONS.md)
 - Build a **dashboard first**, add a natural-language **agent layer later**.

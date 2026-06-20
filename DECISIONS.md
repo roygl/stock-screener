@@ -4,6 +4,29 @@ Newest first. Each entry: the decision, and *why*, so nothing gets re-argued lat
 
 ---
 
+2026-06-20: **Declutter the UI, surface price/ATR/company info, and make Gemini NL search reliable.** The user found
+the results table over-stacked (19–23 flat columns), couldn't see the current **price**, **ATR**, or **what the
+company does**, and had a valid Gemini key that silently fell back to the offline parser. Shipped on branch
+`feat/declutter-surface-gemini` as four behavior-additive stages (the planned Stage-5 file-split refactor was
+**deferred** to avoid merge conflicts with concurrent work — it adds no user-facing value). Decisions:
+- **Surfaced the headline data we already had access to:** current price, daily change %, ATR(14) + ATR%, market
+  cap, industry, and the long business summary. Plumbed additively through provider → `indicators.snapshot()` →
+  engine, all fail-soft to `NaN`/`None`; `business_summary` stays OUT of the grid (detail-panel only).
+- **Compact-by-default table + a Compact/Detailed density toggle** (research-backed: Finviz/TradingView lead with a
+  lean view + progressive disclosure). Compact = identity + Fit + price + signed green/red daily-change + the two
+  tactical readouts; Detailed reveals the profile's signal columns. Symbol column **pinned left**. `column_order` is
+  now the single source of truth for the tactical columns (previously appended in `app.py`); the grid is keyed to
+  its column SET so st-aggrid's client-side column-order persistence can't carry one density's order into the other.
+  Pure-vs-Streamlit boundary preserved (`display.py` still streamlit-free, unit-tested).
+- **Company header card** in the detail panel: a 4-metric row (Price / Daily change / ATR / Market cap) + an
+  Industry caption + a "What the company does" expander, each shown only when present. New pure formatters
+  `format_price` / `format_market_cap` (human units $1.2T/$345.0B).
+- **Gemini self-diagnosing, env/secrets-only (no in-app key box).** Accept `GOOGLE_API_KEY` as an alias for
+  `GEMINI_API_KEY`; add `agent.availability_status() -> (ok, reason)`; `parse_query` folds the fallback reason into
+  the explanation so the NL banner says WHY it degraded. `app.py` bridges `.streamlit/secrets.toml` → `os.environ`
+  at startup (env wins) so a key works regardless of launch context, with a live ✓/✗ status line. **NL schema
+  unchanged** — only made the existing coarse-knob path reliable + visible. Added `.streamlit/secrets.toml.example`.
+
 2026-06-20: **Deploy host = Streamlit Community Cloud (free), NOT Cloudflare.** The user asked to "upload to
 Cloudflare," but the app is a long-running Streamlit (Tornado + WebSocket) server with native deps
 (`pandas`/`numpy`/`pyarrow`/`yfinance`), which **cannot** run on Cloudflare Workers or Pages — the only CF path is
