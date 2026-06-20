@@ -523,13 +523,15 @@ def extension_state(price_df: pd.DataFrame) -> ExtensionState:
 def snapshot(price_df: pd.DataFrame) -> "dict[str, float | bool | None]":
     """Full latest scalar feature set for one ticker (every spec §6 PRICE variable).
 
-    Computes momentum (1/3/6/12-mo), RSI(14), MACD line/signal/histogram, 20-bar
-    relative volume, 52-week-high distance, the 20/50/150 SMAs and 5/9 EMAs,
-    price-above-SMA flags, the SMA stack flag, the 5/9 EMA cross state/event, and
-    the overextension readout (``extension_state`` string / ``extension_score``
-    float) — keyed exactly as documented below. Missing-data-safe: every value
-    degrades to ``NaN``/``None`` (and ``False`` for the stack flag, ``"normal"`` /
-    ``0.0`` for the extension readout) on a short or empty frame; this never raises.
+    Computes the headline price scalars (``price`` last close, ``change_pct`` daily
+    return fraction, ``atr`` 14-bar ATR, ``atr_pct`` ATR as a fraction of price),
+    momentum (1/3/6/12-mo), RSI(14), MACD line/signal/histogram, 20-bar relative
+    volume, 52-week-high distance, the 20/50/150 SMAs and 5/9 EMAs, price-above-SMA
+    flags, the SMA stack flag, the 5/9 EMA cross state/event, and the overextension
+    readout (``extension_state`` string / ``extension_score`` float) — keyed exactly
+    as documented below. Missing-data-safe: every value degrades to ``NaN``/``None``
+    (and ``False`` for the stack flag, ``"normal"`` / ``0.0`` for the extension
+    readout) on a short or empty frame; this never raises.
     """
     close = price_df["close"] if "close" in price_df.columns else pd.Series(dtype="float64")
     volume = price_df["volume"] if "volume" in price_df.columns else pd.Series(dtype="float64")
@@ -538,7 +540,30 @@ def snapshot(price_df: pd.DataFrame) -> "dict[str, float | bool | None]":
     cross = latest_ema_cross(close, EMA_FAST, EMA_SLOW)
     extension = extension_state(price_df)
 
+    # Headline price scalars (surfaced in the UI). All fail-soft to NaN: price is
+    # the last close; change_pct is the latest daily return as a FRACTION (needs >=2
+    # bars and a non-zero prior close); atr is the 14-bar ATR and atr_pct is it as a
+    # fraction of price (both NaN on a short frame or a zero/NaN last close).
+    price = latest(close)
+    prev_close = float(close.iloc[-2]) if len(close) >= 2 else float("nan")
+    change_pct = (
+        (price - prev_close) / prev_close
+        if np.isfinite(price) and np.isfinite(prev_close) and prev_close != 0.0
+        else float("nan")
+    )
+    atr_val = atr_latest(price_df)
+    atr_pct = (
+        atr_val / price
+        if np.isfinite(atr_val) and np.isfinite(price) and price != 0.0
+        else float("nan")
+    )
+
     return {
+        # headline price (current close, daily change, ATR-14 abs + % of price)
+        "price": price,
+        "change_pct": change_pct,
+        "atr": atr_val,
+        "atr_pct": atr_pct,
         # momentum (trailing returns)
         "momentum_1m": momentum(close, 1),
         "momentum_3m": momentum(close, 3),

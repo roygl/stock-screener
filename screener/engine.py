@@ -48,11 +48,12 @@ from .universe import load_universe
 
 log = logging.getLogger(__name__)
 
-# The 23 keys snapshot() emits, in order — used to seed an all-NaN/None row for a
+# The 27 keys snapshot() emits, in order — used to seed an all-NaN/None row for a
 # ticker whose price frame is empty (so the column schema is stable regardless).
 # extension_state (str) / extension_score (float) are the overextension readout; the
 # string key is given a safe-default string below (mirroring ema_5_9_state), not NaN.
 SNAPSHOT_KEYS = (
+    "price", "change_pct", "atr", "atr_pct",
     "momentum_1m", "momentum_3m", "momentum_6m", "momentum_12m",
     "rsi_14", "macd", "macd_signal", "macd_hist",
     "rel_volume_20", "dist_52w_high",
@@ -65,7 +66,7 @@ SNAPSHOT_KEYS = (
 # Fundamentals columns lifted off the Fundamentals dataclass (symbol is the index).
 FUNDAMENTAL_KEYS = (
     "name", "sector", "market_cap", "forward_pe", "trailing_pe",
-    "revenue_growth", "earnings_growth",
+    "revenue_growth", "earnings_growth", "industry", "business_summary",
 )
 
 # Earnings-window width (DECISIONS / spec §5): a name is "in the window" when its

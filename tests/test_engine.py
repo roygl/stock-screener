@@ -469,20 +469,26 @@ def test_assemble_features_populates_snapshot_and_derived():
             "AAA": Fundamentals(
                 symbol="AAA", name="Alpha", sector="Tech", market_cap=1e12,
                 forward_pe=18.0, trailing_pe=22.0, revenue_growth=0.20,
-                earnings_growth=0.25,
+                earnings_growth=0.25, industry="Software", business_summary="Makes alpha.",
             )
         },
         earnings={"AAA": dt.date(2026, 6, 23)},
     )
     feats = eng.assemble_features(_universe([("AAA", "Alpha", "Tech")]), provider, as_of=AS_OF)
     assert list(feats.index) == ["AAA"]
-    # 21 snapshot keys present and populated.
+    # Every snapshot key present and populated.
     for key in eng.SNAPSHOT_KEYS:
         assert key in feats.columns
     assert feats.loc["AAA", "rel_volume_20"] > 2.0
-    # Fundamentals joined.
+    # Headline price scalars surfaced and real.
+    assert _finite_num(feats.loc["AAA", "price"]) and float(feats.loc["AAA", "price"]) > 0.0
+    assert _finite_num(feats.loc["AAA", "change_pct"])
+    assert _finite_num(feats.loc["AAA", "atr"]) and float(feats.loc["AAA", "atr"]) > 0.0
+    # Fundamentals joined (incl. the new industry / business_summary fields).
     assert feats.loc["AAA", "forward_pe"] == 18.0
     assert feats.loc["AAA", "sector"] == "Tech"
+    assert feats.loc["AAA", "industry"] == "Software"
+    assert feats.loc["AAA", "business_summary"] == "Makes alpha."
     # Derived columns present and in range.
     for col in ("pct_from_ema_10", "pct_from_ema_20", "pullback_quality",
                 "rsi_health", "ema_5_9_cross_score"):
