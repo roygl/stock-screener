@@ -50,6 +50,20 @@ def run_cached(profile_name: str, n_names: int, cache_day: str) -> pd.DataFrame:
     return run_screen(profile_name, load_universe().head(n_names))
 
 
+@st.cache_data(show_spinner=False)
+def patterns_for_symbol(symbol: str, cache_day: str) -> dict:
+    """Detect chart patterns for ONE inspected symbol across 1w/1d/1mo.
+
+    Keyed on (symbol, cache_day) so it aligns with the date-keyed on-disk cache:
+    re-fetching an already-scanned symbol's prices the same day is instant. Pure
+    output (dict[str, list[Pattern]]) pickles through st.cache_data.
+    """
+    from screener.provider import YFinanceProvider   # import INSIDE the function
+    from screener import patterns
+    prices = YFinanceProvider().price_history(symbol)
+    return patterns.detect_all_timeframes(prices)
+
+
 # --- title + global disclaimer caption -----------------------------------
 st.title("📈 Stock Screener")
 st.caption("US large-cap · end-of-day · ranks and describes, never advises")
@@ -120,22 +134,23 @@ def _build_column_config(profile) -> dict:
     for col, desc in display.column_config_spec(profile).items():
         kind = desc.get("kind")
         label = desc.get("label", col)
+        help_text = desc.get("help")  # header "?" tooltip (None -> no tooltip)
         if kind == "progress":
             cfg[col] = st.column_config.ProgressColumn(
-                label, format=desc.get("format"), min_value=desc.get("min", 0.0),
-                max_value=desc.get("max", 1.0),
+                label, help=help_text, format=desc.get("format"),
+                min_value=desc.get("min", 0.0), max_value=desc.get("max", 1.0),
             )
         elif kind == "percent":
             # Percent-style features are FRACTIONS in the engine (0.12 == 12%).
             # The "percent" format preset (NOT a printf "%%" pattern) multiplies
             # by 100 for display, so 0.12 renders as "12.00%".
-            cfg[col] = st.column_config.NumberColumn(label, format=desc.get("format", "percent"))
+            cfg[col] = st.column_config.NumberColumn(label, help=help_text, format=desc.get("format", "percent"))
         elif kind == "number":
-            cfg[col] = st.column_config.NumberColumn(label, format=desc.get("format"))
+            cfg[col] = st.column_config.NumberColumn(label, help=help_text, format=desc.get("format"))
         elif kind == "checkbox":
-            cfg[col] = st.column_config.CheckboxColumn(label)
+            cfg[col] = st.column_config.CheckboxColumn(label, help=help_text)
         else:  # text
-            cfg[col] = st.column_config.TextColumn(label)
+            cfg[col] = st.column_config.TextColumn(label, help=help_text)
     return cfg
 
 
@@ -165,6 +180,7 @@ with st.sidebar:
         "Profile",
         options=list(PROFILES),
         format_func=lambda k: PROFILES[k].label,
+        captions=[display.profile_description(k) for k in PROFILES],
         key="profile_name",
     )
     profile = get_profile(profile_name)
@@ -360,7 +376,7 @@ def _render_results(
     reasons = row["reasons"]
 
     st.subheader(f"Why {symbol} ranks #{int(row['rank'])}")
-    st.metric("Score", f"{float(row['score']):.3f}")
+    st.metric("Score", f"{float(row['score']):.3f}", help=display.SCORE_HELP)
 
     # Swing-only earnings badge for the inspected row.
     if "earnings_in_window" in profile.flags:
@@ -370,22 +386,92 @@ def _render_results(
         if badge:
             st.badge(badge, color="orange")
 
+    # Plain-English headline before the numbers: where the row is strong / weak.
+    summary = display.explain_rank(row, reasons, profile, total=len(df))
+    if summary:
+        st.markdown(summary)
+
     reasons_df = display.reasons_to_frame(reasons, profile)
     st.dataframe(
         reasons_df,
         hide_index=True,
         width="stretch",
         column_config={
+            "Signal": st.column_config.TextColumn("Signal", width="small"),
+            "What it measures": st.column_config.TextColumn(
+                "What it measures", help=display.WHAT_HELP, width="large",
+            ),
+            "Value": st.column_config.TextColumn("Value", width="small"),
             "Percentile": st.column_config.ProgressColumn(
-                "Percentile", format="%.2f", min_value=0.0, max_value=1.0,
+                "Percentile", help=display.PERCENTILE_HELP,
+                format="%.2f", min_value=0.0, max_value=1.0, width="medium",
             ),
             "Contribution": st.column_config.ProgressColumn(
-                "Contribution", format="%.3f", min_value=0.0,
-                max_value=display.max_contribution(reasons),
+                "Contribution", help=display.CONTRIBUTION_HELP,
+                format="%.3f", min_value=0.0,
+                max_value=display.max_contribution(reasons), width="medium",
             ),
         },
     )
     st.caption(display.contribution_caption(reasons, float(row["score"])))
+
+    # Definitions for the columns + every signal in this profile (kept out of the
+    # table so the bars stay readable; the inline "What it measures" column carries
+    # the short version).
+    with st.expander("ℹ️ How to read this"):
+        intro = display.profile_description(profile.name)
+        if intro:
+            st.caption(intro)
+        st.markdown(
+            f"- **Score** — {display.SCORE_HELP}\n"
+            f"- **Percentile** — {display.PERCENTILE_HELP}\n"
+            f"- **Contribution** — {display.CONTRIBUTION_HELP}"
+        )
+        st.markdown("**Signals in this profile**")
+        for label, desc in display.signal_glossary(profile):
+            st.markdown(f"- **{label}** — {desc}")
+
+    # --- Chart patterns (descriptive shapes for the inspected symbol) -----
+    # On-demand for the ONE inspected symbol only — NOT part of the universe scan.
+    # The fetch is cached + date-keyed (a warm read for an already-scanned name),
+    # so this adds no cost to the cold-scan path and lives only in the RESULTS state.
+    st.divider()
+    st.subheader("Chart patterns")
+    st.caption(
+        "Mechanically-detected price shapes across timeframes — descriptive "
+        "geometry from end-of-day bars, not signals to act on."
+    )
+    detected = patterns_for_symbol(symbol, cache_day)
+    TF_LABELS = {"1w": "Weekly", "1d": "Daily", "1mo": "Monthly"}
+    any_found = any(detected.get(tf) for tf in ("1w", "1d", "1mo"))
+    if not any_found:
+        st.write("No notable patterns detected on the 1w / 1d / 1mo timeframes.")
+    else:
+        for tf in ("1w", "1d", "1mo"):
+            pats = detected.get(tf, [])
+            st.markdown(f"**{TF_LABELS[tf]}**")
+            if not pats:
+                st.caption("No notable patterns.")
+                continue
+            rows = [
+                {
+                    "Pattern": p.label(),
+                    "Direction": p.direction,
+                    "Confidence": float(p.confidence),
+                    "Span": f"{p.start.date()} → {p.end.date()}",
+                }
+                for p in pats
+            ]
+            st.dataframe(
+                pd.DataFrame(rows),
+                hide_index=True,
+                width="stretch",
+                column_config={
+                    "Confidence": st.column_config.ProgressColumn(
+                        "Confidence", format="%.2f", min_value=0.0, max_value=1.0
+                    )
+                },
+            )
 
 
 # --- NL transparency: show how the last request was interpreted ----------

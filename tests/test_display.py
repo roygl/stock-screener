@@ -276,12 +276,19 @@ def test_reasons_to_frame_order_and_columns():
     sw = _swing_profile()
     reasons = _reasons(sw, with_flags=True)
     frame = display.reasons_to_frame(reasons, sw)
-    assert list(frame.columns) == ["Signal", "Value", "Percentile", "Contribution"]
+    assert list(frame.columns) == [
+        "Signal", "What it measures", "Value", "Percentile", "Contribution",
+    ]
     # One row per signal, flags excluded.
     assert len(frame) == len(sw.signals)
     # Order preserved (the profile's signal order via humanized labels).
     expected = [display.feature_label(s.feature) for s in sw.signals]
     assert list(frame["Signal"]) == expected
+    # The inline definition column carries each signal's plain-English description.
+    assert list(frame["What it measures"]) == [
+        display.feature_description(s.feature) for s in sw.signals
+    ]
+    assert all(frame["What it measures"])  # none empty for real signals
 
 
 def test_reasons_to_frame_nan_tolerant():
@@ -294,7 +301,9 @@ def test_reasons_to_frame_nan_tolerant():
     # Empty / None reasons -> empty frame with the right columns.
     empty = display.reasons_to_frame(OrderedDict(), p)
     assert len(empty) == 0
-    assert list(empty.columns) == ["Signal", "Value", "Percentile", "Contribution"]
+    assert list(empty.columns) == [
+        "Signal", "What it measures", "Value", "Percentile", "Contribution",
+    ]
     assert len(display.reasons_to_frame(None, p)) == 0
 
 
@@ -327,6 +336,86 @@ def test_max_contribution_positive():
     assert display.max_contribution(zero) > 0.0
     # Empty reasons -> still > 0.
     assert display.max_contribution(OrderedDict()) > 0.0
+
+
+# =========================================================================
+# explanations: descriptions, help copy, narrative, glossary
+# =========================================================================
+def test_feature_descriptions_parity():
+    # Every labelled feature has a non-empty description and vice-versa.
+    assert set(display.FEATURE_DESCRIPTIONS) == set(display.FEATURE_LABELS)
+    assert all(v.strip() for v in display.FEATURE_DESCRIPTIONS.values())
+
+
+def test_feature_description_accessor():
+    # forward_pe is the lone "lower is better" signal — its description says so.
+    assert "cheaper" in display.feature_description("forward_pe")
+    assert display.feature_description("does_not_exist") == ""  # safe fallback
+
+
+def test_help_constants_present():
+    for txt in (display.SCORE_HELP, display.PERCENTILE_HELP,
+                display.CONTRIBUTION_HELP, display.WHAT_HELP):
+        assert isinstance(txt, str) and txt.strip()
+
+
+def test_profile_descriptions_for_every_profile():
+    from screener.profiles import PROFILES
+    for name in PROFILES:
+        assert display.profile_description(name).strip()
+    assert display.profile_description("nope") == ""
+
+
+def test_signal_glossary_matches_profile_signals():
+    sw = _swing_profile()
+    gloss = display.signal_glossary(sw)
+    assert [lbl for lbl, _ in gloss] == [display.feature_label(s.feature) for s in sw.signals]
+    assert all(desc.strip() for _, desc in gloss)  # every signal documented
+    assert display.signal_glossary(None) == []
+
+
+def test_explain_rank_names_strongest_and_weakest():
+    p = Profile(
+        "t", "T",
+        signals=(SignalSpec("revenue_growth", 1.0), SignalSpec("earnings_growth", 1.0),
+                 SignalSpec("momentum_12m", 1.0)),
+    )
+    reasons = OrderedDict()
+    reasons["revenue_growth"] = {"value": 0.2, "percentile": 0.90, "contribution": 0.3}
+    reasons["earnings_growth"] = {"value": 0.3, "percentile": 1.00, "contribution": 0.33}
+    reasons["momentum_12m"] = {"value": 0.1, "percentile": 0.20, "contribution": 0.07}
+    reasons["flags"] = {"x": True}  # ignored
+    row = pd.Series({"symbol": "AFL", "rank": 2, "score": 0.7})
+    txt = display.explain_rank(row, reasons, p, total=50)
+    assert txt.startswith("AFL ranks #2 of 50 —")
+    # Strongest two = highest percentile (earnings 1.00, then revenue 0.90).
+    assert "strongest on Earnings Growth and Revenue Growth" in txt
+    # Weakest = lowest percentile (momentum 0.20).
+    assert "weakest on 12M Momentum" in txt
+
+
+def test_explain_rank_edges():
+    # No usable signals but a rank -> just the headline.
+    row = pd.Series({"symbol": "ZZZ", "rank": 5})
+    assert display.explain_rank(row, OrderedDict()) == "ZZZ ranks #5."
+    # No row / no reasons -> empty string (caller renders nothing).
+    assert display.explain_rank(None, None) == ""
+    # total omitted -> no "of N"; single signal -> no "weakest" clause.
+    p = Profile("t", "T", signals=(SignalSpec("revenue_growth", 1.0),))
+    reasons = OrderedDict()
+    reasons["revenue_growth"] = {"value": 0.2, "percentile": 0.9, "contribution": 0.9}
+    txt = display.explain_rank(pd.Series({"symbol": "QQQ", "rank": 1}), reasons, p)
+    assert txt == "QQQ ranks #1 — strongest on Revenue Growth."
+
+
+def test_column_config_spec_carries_help():
+    sw = _swing_profile()
+    spec = display.column_config_spec(sw)
+    assert spec["score"]["help"] == display.SCORE_HELP
+    assert spec["rank"]["help"].strip()
+    # Each signal column gets its description as a header tooltip.
+    for s in sw.signals:
+        assert spec[s.feature]["help"] == display.feature_description(s.feature)
 
 
 # =========================================================================

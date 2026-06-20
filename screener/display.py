@@ -76,6 +76,67 @@ FEATURE_LABELS: "dict[str, str]" = {
     "sector_strength_score": "Sector Strength",
 }
 
+# Plain-English, cell-sized definition for every feature in FEATURE_LABELS. Used
+# BOTH by the inline "What it measures" column and the "How to read this" glossary
+# (one source of truth — no per-profile duplication). Direction hints are baked in
+# where polarity isn't obvious (e.g. forward_pe — lower is better). Parallel to
+# FEATURE_LABELS: every label key has a description (a test asserts the parity).
+FEATURE_DESCRIPTIONS: "dict[str, str]" = {
+    # momentum
+    "momentum_1m": "Price return over the last ~1 month.",
+    "momentum_3m": "Price return over the last ~3 months.",
+    "momentum_6m": "Price return over the last ~6 months.",
+    "momentum_12m": "Price return over the last ~12 months.",
+    # trend / structure
+    "sma_stacked_20_50_150": "20-day > 50-day > 150-day average — a clean stacked uptrend.",
+    "dist_52w_high": "How far below the 52-week high; nearer the high ranks better.",
+    # valuation / growth
+    "forward_pe": "Price ÷ next-year expected earnings; lower (cheaper) ranks better.",
+    "trailing_pe": "Price ÷ last-year earnings; lower (cheaper) is a cheaper valuation.",
+    "revenue_growth": "Year-over-year sales growth.",
+    "earnings_growth": "Year-over-year earnings (profit) growth.",
+    # swing derived / flow
+    "ema_5_9_cross_score": "Freshness and strength of a bullish 5-over-9 EMA cross (0–1).",
+    "rel_volume_20": "Today's volume vs its 20-day average; >1× is unusually active.",
+    "macd_hist": "MACD line minus its signal line; positive = strengthening momentum.",
+    "rsi_14": "14-day Relative Strength Index (0–100); ~70+ is overbought.",
+    "rsi_health": "RSI rescaled to 0–1 with an overbought penalty — strong but not stretched.",
+    "pullback_quality": "Health of a pullback to the 10/20-day EMAs (0–1).",
+    "sector_strength_score": "The stock's sector ranked by 3-month return (0–1).",
+}
+
+# Column / score "?" tooltip copy. Kept here (pure, unit-testable) so app.py can
+# pass them straight to st.* ``help=`` arguments. PERCENTILE_HELP explains the
+# lower-is-better inversion so a high bar on a cheap P/E reads correctly.
+SCORE_HELP = (
+    "Weighted blend of this profile's signal percentiles (0–1). Higher = a better "
+    "match to the style. Not a price target or a buy signal."
+)
+PERCENTILE_HELP = (
+    "Rank versus every stock in this scan (0 = bottom, 1 = top). For 'lower is "
+    "better' signals like P/E the rank is flipped, so cheaper still scores high."
+)
+CONTRIBUTION_HELP = (
+    "This signal's share of the Score = its normalized weight × its percentile. "
+    "The rows sum to the Score."
+)
+WHAT_HELP = "What each signal measures, and which direction ranks better."
+
+# One-line, plain-English description per profile (keyed by ``Profile.name``).
+# Feeds the profile radio's captions and the glossary intro. Descriptive only —
+# never advice.
+PROFILE_DESCRIPTIONS: "dict[str, str]" = {
+    "long_term": (
+        "Quality compounders in a durable uptrend: reasonable valuation, growing "
+        "sales and earnings, a clean trend."
+    ),
+    "swing": (
+        "Short-term setups: a fresh 5/9 EMA cross on heavy volume in a leading "
+        "sector, with an earnings-date heads-up."
+    ),
+    "momentum": "Strongest trailing returns and trend, confirmed by volume.",
+}
+
 # Feature buckets that drive type-aware formatting and the column-config kind.
 # Fractions in the engine (0.12 == 12%); momentum_12m can exceed 1.0.
 _PERCENT_FEATURES = frozenset(
@@ -121,6 +182,16 @@ def _is_missing(value) -> bool:
 def feature_label(feature: str) -> str:
     """Human label for ``feature`` (explicit map, title-case fallback, no KeyError)."""
     return FEATURE_LABELS.get(feature, feature.replace("_", " ").title())
+
+
+def feature_description(feature: str) -> str:
+    """Plain-English definition for ``feature`` (``""`` if unknown — never KeyError)."""
+    return FEATURE_DESCRIPTIONS.get(feature, "")
+
+
+def profile_description(name: str) -> str:
+    """One-line description for a profile by ``Profile.name`` (``""`` if unknown)."""
+    return PROFILE_DESCRIPTIONS.get(name, "")
 
 
 # --- universe-size guard -------------------------------------------------
@@ -306,11 +377,13 @@ def column_config_spec(profile: Profile) -> "dict[str, dict]":
     without a browser.
     """
     spec: "dict[str, dict]" = {
-        "rank": {"kind": "number", "label": "Rank", "format": "%d"},
+        "rank": {"kind": "number", "label": "Rank", "format": "%d",
+                 "help": "Position in the ranked list (1 = best match for this profile)."},
         "symbol": {"kind": "text", "label": "Symbol"},
         "name": {"kind": "text", "label": "Name"},
         "sector": {"kind": "text", "label": "Sector"},
-        "score": {"kind": "progress", "label": "Score", "format": "%.3f", "min": 0.0, "max": 1.0},
+        "score": {"kind": "progress", "label": "Score", "format": "%.3f", "min": 0.0, "max": 1.0,
+                  "help": SCORE_HELP},
     }
 
     for s in profile.signals:
@@ -335,6 +408,8 @@ def column_config_spec(profile: Profile) -> "dict[str, dict]":
             spec[feat] = {"kind": "checkbox", "label": label}
         else:
             spec[feat] = {"kind": "number", "label": label, "format": "%.2f"}
+        # Every signal column carries its plain-English definition as a header tooltip.
+        spec[feat]["help"] = feature_description(feat)
 
     # Swing-only earnings columns.
     if "earnings_in_window" in profile.flags:
@@ -401,15 +476,16 @@ def _signal_items(reasons) -> "list[tuple[str, dict]]":
 def reasons_to_frame(reasons, profile: Profile) -> pd.DataFrame:
     """Tidy the per-row ``reasons`` OrderedDict into a display frame.
 
-    Columns ``Signal`` (humanized), ``Value`` (via :func:`format_value`),
-    ``Percentile`` (float 0..1), ``Contribution`` (float 0..1), in the
-    OrderedDict's signal order, excluding the ``"flags"`` key. The numeric
-    Percentile/Contribution stay numeric so ``app.py`` can render them as
+    Columns ``Signal`` (humanized), ``What it measures`` (plain-English
+    definition via :func:`feature_description`), ``Value`` (via
+    :func:`format_value`), ``Percentile`` (float 0..1), ``Contribution`` (float
+    0..1), in the OrderedDict's signal order, excluding the ``"flags"`` key. The
+    numeric Percentile/Contribution stay numeric so ``app.py`` can render them as
     progress bars; ``Value`` is the pre-formatted string. Tolerant of
     ``NaN``/``None`` values and an empty/``None`` ``reasons`` (-> empty frame
     with the right columns).
     """
-    columns = ["Signal", "Value", "Percentile", "Contribution"]
+    columns = ["Signal", "What it measures", "Value", "Percentile", "Contribution"]
     items = _signal_items(reasons)
     if not items:
         return pd.DataFrame({c: pd.Series(dtype="object") for c in columns})
@@ -421,6 +497,7 @@ def reasons_to_frame(reasons, profile: Profile) -> pd.DataFrame:
         rows.append(
             {
                 "Signal": feature_label(feat),
+                "What it measures": feature_description(feat),
                 "Value": format_value(feat, entry.get("value")),
                 "Percentile": float(pct) if not _is_missing(pct) else float("nan"),
                 "Contribution": float(contrib) if not _is_missing(contrib) else float("nan"),
@@ -462,6 +539,58 @@ def contribution_caption(reasons, score: float) -> str:
             total += float(c)
     score_val = 0.0 if _is_missing(score) else float(score)
     return f"Signal contributions sum to the score ({total:.3f} ≈ {score_val:.3f})"
+
+
+def explain_rank(row, reasons, profile=None, total=None) -> str:
+    """One descriptive sentence: why this row ranks where it does.
+
+    Names the 1–2 signals the stock stands strongest on and the single weakest,
+    ranked by **percentile** (where it genuinely sits versus the scan), e.g.
+    ``"AFL ranks #2 of 50 — strongest on Earnings Growth and Revenue Growth, "``
+    ``"weakest on 12M Momentum."``. Returns ``""`` when there is nothing useful to
+    say (the caller then renders nothing). Purely descriptive — never advice.
+
+    ``row`` is the result row (needs ``symbol`` / ``rank``); ``profile`` is
+    accepted for signature symmetry but unused; ``total`` (e.g. ``len(df)``) adds
+    the "of N" when given.
+    """
+    symbol = "" if row is None else str(row.get("symbol", "") or "").strip()
+    rank = None if row is None else row.get("rank")
+    head = symbol or "This stock"
+    if not _is_missing(rank):
+        head += f" ranks #{int(rank)}"
+        if total:
+            head += f" of {int(total)}"
+
+    scored = [
+        (feat, float(entry.get("percentile")))
+        for feat, entry in _signal_items(reasons)
+        if not _is_missing(entry.get("percentile"))
+    ]
+    if not scored:
+        # No signal detail — only worth a line if we at least have a rank.
+        return f"{head}." if not _is_missing(rank) else ""
+
+    by_pct = sorted(scored, key=lambda kv: kv[1], reverse=True)
+    top = by_pct[: min(2, len(by_pct))]
+    clause = "strongest on " + " and ".join(feature_label(f) for f, _ in top)
+    weak_feat = by_pct[-1][0]
+    if weak_feat not in {f for f, _ in top}:
+        clause += f", weakest on {feature_label(weak_feat)}"
+    return f"{head} — {clause}."
+
+
+def signal_glossary(profile: Profile) -> "list[tuple[str, str]]":
+    """``(label, description)`` per signal in ``profile``, in signal order.
+
+    Feeds the "How to read this" expander. Reuses :func:`feature_label` /
+    :func:`feature_description`, inheriting their safe fallbacks.
+    """
+    if profile is None or not getattr(profile, "signals", None):
+        return []
+    return [
+        (feature_label(s.feature), feature_description(s.feature)) for s in profile.signals
+    ]
 
 
 # --- earnings badge / summary -------------------------------------------

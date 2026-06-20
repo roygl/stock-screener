@@ -73,6 +73,17 @@ interpretation, set `ANTHROPIC_API_KEY` and install the optional `anthropic` pac
 `SCREENER_AGENT_MODEL`). With no key it silently stays on the rule-based parser, and it
 never gives buy/sell advice — it only translates your request into a screen.
 
+## Chart patterns
+
+When you inspect a ranked ticker, the detail panel also shows **mechanically-detected
+chart patterns** across the **weekly / daily / monthly** end-of-day timeframes —
+head & shoulders (and inverse), double tops/bottoms, cup & handle, ascending /
+descending / symmetric triangles, and rising / falling wedges — each with a direction
+and a confidence. These are **descriptive geometry, not signals to act on**: detection
+is heuristic, and noisy shapes (especially head-and-shoulders on choppy data) can still
+appear, so treat them as context. They're computed on demand for the one inspected symbol
+from its cached daily bars — no extra universe scan, no intraday data.
+
 ## The three profiles
 
 A profile is a **config**, not code: a set of **hard filters** (cutoffs a name
@@ -199,11 +210,11 @@ For the bigger picture, read **[CLAUDE.md](CLAUDE.md)** (project brief),
 
 ### Roadmap (post-v1)
 
-Equities only in v1. The **natural-language "Interpret & run" box** ships (offline
-rule-based parsing, or Claude when `ANTHROPIC_API_KEY` is set) as a layer over the
-deterministic engine — see *Ask in plain English* above. Next up: **descriptive
-chart-pattern detection** (wedges, head & shoulders, cup & handle, …) on end-of-day
-timeframes (1w / 1d / 1mo). A live crypto pipeline is on hold. **v3** is a gated ML
+Equities only in v1. The **natural-language "Interpret & run" box** and **descriptive
+chart-pattern detection** (1w / 1d / 1mo — see the sections above) both ship as layers
+over the deterministic engine, alongside an in-dashboard **help / glossary** for the
+signals. A live crypto pipeline is on hold; universe-wide pattern *screening* (filter/rank
+by detected pattern, not just show it per ticker) is a backlog idea. **v3** is a gated ML
 research track — a backtest harness first, then a model that enters only as one more
 *signal* feeding the percentile ranker, never as the ranking engine itself. The tool
 stays descriptive: it ranks and describes, it does not advise.

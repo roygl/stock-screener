@@ -78,11 +78,18 @@ scope before writing code in each. Check each milestone's output against `spec.m
   "Interpret & run" box. Offline-first: Anthropic Claude (`claude-opus-4-8`, strict forced tool use) when
   `ANTHROPIC_API_KEY` is set, else a deterministic rule-based parser; one `validate_request` safety layer clamps
   every result, so the engine stays the source of truth (a layer on top, not a replacement). See DECISIONS.md.
-- **Chart-pattern technical analysis** (NEXT) — descriptive detection of common shapes (wedges,
-  head & shoulders, cup & handle, triangles, double top/bottom, flags) via swing-pivot +
-  geometric rules; a per-ticker readout, never a buy/sell call. **EOD timeframes only —
-  1w / 1d / 1mo** (resampled from the daily bars); NO intraday/4h, to keep the end-of-day
-  decision (spec §9) and the date-keyed cache intact.
+- **Chart-pattern technical analysis** ✅ DONE — descriptive detection of common shapes
+  (head & shoulders + inverse, double top/bottom, cup & handle, ascending/descending/symmetric
+  triangles, rising/falling wedges) via swing-pivot + geometric rules; a per-ticker readout in the
+  detail panel across **EOD 1w / 1d / 1mo** (resampled from the daily bars; NO intraday/4h), never a
+  buy/sell call. `screener/patterns.py` (pure) + `tests/test_patterns.py` (36 offline tests).
+  Precision-first (volatility gates + mutual-exclusion de-dup + a confidence floor); the residual
+  noisy-shape limitation is documented. See DECISIONS.md.
+- **Dashboard help / explanations UI** ✅ DONE (shipped concurrently) — per-signal descriptions,
+  score/percentile/contribution tooltips, profile descriptions, and a "How to read this" glossary in
+  `screener/display.py` (`tests/test_display.py` 24→32).
+- **Universe-wide pattern screening** (backlog) — let a profile filter/rank by detected pattern, not
+  just show patterns for the inspected ticker.
 - **Crypto / live asset-class toggle — DEPRIORITIZED** — `CoinGeckoProvider` + crypto
   universe (swing/momentum only, no fundamentals). On hold per the 2026-06-20 decision;
   the asset-class toggle stays a disabled stub.

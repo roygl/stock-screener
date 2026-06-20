@@ -10,6 +10,10 @@
   filters + weighted signals) run through one generic pipeline
   (:func:`run_screen`) that assembles features, scores by cross-sectional
   percentile rank, and returns a ranked, explained table.
+- M-patterns: descriptive chart-pattern detection — pure swing-pivot zigzag +
+  per-shape detectors (double tops, H&S, triangles, wedges, cup & handle) over
+  1d/1w/1mo bars, returning picklable :class:`Pattern` shapes (describes, never
+  advises).
 
 Later milestones add the Streamlit dashboard (M5).
 """
@@ -42,6 +46,16 @@ from .engine import (
     compute_sector_strength,
     run_screen,
     score_and_rank,
+)
+from .patterns import (
+    PATTERN_LABELS,
+    Pattern,
+    Pivot,
+    detect,
+    detect_all_timeframes,
+    find_pivots,
+    human_label,
+    resample_ohlc,
 )
 from .profiles import PROFILES, Filter, Profile, SignalSpec, get_profile
 from .provider import DataProvider, Fundamentals, YFinanceProvider
@@ -84,4 +98,13 @@ __all__ = [
     "apply_filters",
     "score_and_rank",
     "run_screen",
+    # M-patterns: descriptive chart-pattern detection
+    "Pattern",
+    "Pivot",
+    "resample_ohlc",
+    "find_pivots",
+    "detect",
+    "detect_all_timeframes",
+    "human_label",
+    "PATTERN_LABELS",
 ]

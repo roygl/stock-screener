@@ -17,7 +17,7 @@ step — it does not replace charting, broker execution, or live alerting.
 - **Caching:** local cache layer so we don't hammer Yahoo
 
 ## Active task
-> Post-MVP: natural-language agent layer (DONE). Next: chart-pattern technical analysis (EOD 1w/1d/1mo). See PLAN.md.
+> Post-MVP: chart-pattern TA (DONE) + dashboard help/explanations UI (DONE). Backlog: universe-wide pattern screening. See PLAN.md.
 
 ## Key decisions (full log in DECISIONS.md)
 - Build a **dashboard first**, add a natural-language **agent layer later**.

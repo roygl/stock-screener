@@ -4,6 +4,34 @@ Newest first. Each entry: the decision, and *why*, so nothing gets re-argued lat
 
 ---
 
+2026-06-20: **Chart-pattern technical analysis (DONE) — a pure, descriptive per-ticker shape READOUT, EOD only.**
+`screener/patterns.py` detects common shapes from price geometry and surfaces them in the inspected-ticker detail
+panel; it describes what the chart shows, it never advises. The non-obvious choices:
+- **Pure + offline, like the rest of the engine.** patterns.py imports only pandas/numpy/stdlib (NEVER streamlit /
+  yfinance / network); `tests/test_patterns.py` (36 offline tests) drives canonical synthetic shapes + anti-shapes.
+  The foundation is a swing-pivot/zigzag detector (per-timeframe fractal window + a min-move threshold, strictly
+  alternating highs/lows, no lookahead beyond available bars); each pattern detector reads the pivot sequence +
+  price arrays. Covered: head & shoulders (+ inverse), double top/bottom, cup & handle, ascending/descending/
+  symmetric triangles, rising/falling wedges. Frozen `Pattern` dataclass → picklable so app.py can `st.cache_data` it.
+- **EOD timeframes ONLY — 1w / 1d / 1mo, all resampled from the daily bars** (OHLCV-correct: open=first/high=max/
+  low=min/close=last/volume=sum; right-labeled, no future-peek). NO intraday / NO 4h — preserves the locked
+  end-of-day decision (spec §9) and the date-keyed cache (the user chose EOD-only over a 4h intraday path).
+- **Precision over recall, with an honest residual limitation.** Detectors have hard geometric gates + a
+  volatility-relative amplitude gate (a shape must clear a multiple of the span's realized volatility, so random
+  wiggles don't qualify) + a 0.45 confidence floor + mutual-exclusion de-dup (an overlapping reversal and a
+  triangle/wedge/cup container don't co-emit contradictory directions — the multi-pivot container wins). Anti-shapes
+  (flat / monotonic / parallel non-converging channel) stay silent. DOCUMENTED residual: textbook reversal shapes —
+  especially head & shoulders — genuinely occur on random walks, and no gate fully separates them without killing
+  the canonical positives, so reversal-on-noise can appear; the feature is framed descriptively (the panel caption
+  says these are mechanically-detected shapes, not signals to act on).
+- **On-demand, never part of the universe scan.** Patterns are computed for the ONE inspected symbol via a
+  module-level `@st.cache_data` helper keyed on `(symbol, cache_day)` (a warm read of that symbol's already-cached
+  daily bars); the engine's single call site and the cold-scan guard are untouched. Built via a design → implement →
+  3-lens review (detection / robustness / integration) workflow + a focused fix pass (de-dup contradiction +
+  volatility gates + dead code). A **dashboard help/explanations UI** (per-signal descriptions, score/percentile/
+  contribution tooltips, a "How to read this" glossary) shipped concurrently in `screener/display.py` and is
+  committed alongside.
+
 2026-06-20: **Natural-language agent layer (DONE) — an offline-first translation layer ON TOP of the engine,
 never a replacement.** `screener/agent.py` maps a plain-English query to the same screen knobs the sidebar
 exposes (profile, universe size, sectors, score floor, symbol filter, swing earnings toggle) plus a one-line
