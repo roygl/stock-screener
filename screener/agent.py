@@ -5,29 +5,38 @@ of truth. The agent only translates a free-text request into the same knobs the
 sidebar already exposes (profile, universe size, sectors, score floor, a symbol
 filter, the swing-only earnings toggle) and a one-line ``explanation`` of how it
 read the request. It NEVER gives buy/sell/hold advice — both the rule-based path
-and the LLM system prompt are constrained to parameter extraction only.
+and every LLM system prompt are constrained to parameter extraction only.
+
+The LLM backend is SWAPPABLE via a small provider registry (:data:`PROVIDERS`):
+a native **Anthropic** (Claude) path plus an OpenAI-compatible family —
+**OpenAI**, **xAI** (Grok), **Google Gemini**, **Mistral**, and local **Ollama**
+— that all ride the single ``openai`` SDK and differ only by ``base_url`` /
+env-var / model. Credentials come from the environment only; the active provider
+defaults to ``anthropic`` (so default behavior is unchanged) and is selectable via
+the ``provider=`` arg or the ``SCREENER_AGENT_PROVIDER`` env var.
 
 Design constraints (house style + the build spec):
 
 - **Pure and cheap at import time.** This module imports only the stdlib at
-  module scope. It NEVER imports streamlit, and it NEVER imports anthropic at
-  module top — the SDK is *lazy-imported inside* :func:`_llm_extract`, so
-  ``from screener import agent`` succeeds with anthropic absent (it is today) and
-  with no API key. :func:`agent_available` probes for the SDK via
-  ``importlib.util.find_spec`` without importing it.
+  module scope. It NEVER imports streamlit, and it NEVER imports ``anthropic`` or
+  ``openai`` at module top — each SDK is *lazy-imported inside* the relevant
+  :func:`_llm_extract` branch, so ``from screener import agent`` succeeds with
+  NEITHER SDK installed (it is today) and with no API key. :func:`agent_available`
+  probes for the needed SDK via ``importlib.util.find_spec`` without importing it.
 - **One safety layer.** :func:`validate_request` coerces and clamps EVERY field
   and never raises; BOTH the rule-based dict and the LLM's tool-call dict are
   routed through it, so clamping (n_names 5..503, min_score [0,1]), sector
   canonicalization against the live universe, the bad-profile fallback, and the
   swing-only earnings gate live in exactly one place.
-- **Graceful degradation.** :func:`parse_query` uses the LLM only when a key is
-  present AND the SDK imports; on ANY failure (or no key) it falls back to the
-  offline :func:`rule_based_parse`. The UI never crashes and never requires the
-  optional dependency.
+- **Graceful degradation.** :func:`parse_query` uses the LLM only when the
+  selected provider's key is present AND its SDK imports; on ANY failure (or no
+  key) it falls back to the offline :func:`rule_based_parse`. The UI never crashes
+  and never requires an optional dependency.
 """
 
 from __future__ import annotations
 
+import json
 import os
 import re
 from dataclasses import dataclass, replace
@@ -45,9 +54,96 @@ N_NAMES_MIN = 5
 N_NAMES_MAX = 503
 N_NAMES_DEFAULT = 25
 
-# The LLM model. Overridable via env so ops can pin/upgrade without a code change;
-# defaults to opus-4-8 (do NOT downgrade for cost — this is a one-shot extraction).
+# The default Anthropic model. Overridable via env so ops can pin/upgrade without a
+# code change; defaults to opus-4-8 (do NOT downgrade for cost — one-shot extraction).
 DEFAULT_MODEL = "claude-opus-4-8"
+
+
+@dataclass(frozen=True)
+class Provider:
+    """One selectable LLM backend (a row in the :data:`PROVIDERS` registry).
+
+    The registry is the single source of truth for which backends exist and how to
+    reach each one; adding/removing a backend is a one-line edit here. ``kind`` picks
+    the SDK/call path in :func:`_llm_extract` (``"anthropic"`` -> the native Messages
+    API; ``"openai"`` -> the OpenAI-compatible Chat Completions path shared by OpenAI,
+    xAI, Gemini, Mistral, and Ollama). Default model ids live ONLY here so they can be
+    pinned/upgraded in one place; each is overridable via :attr:`model_env` (and the
+    global ``SCREENER_AGENT_MODEL``). :attr:`base_url` is ``None`` for the SDK default.
+    :attr:`env_key` is ``""`` for a keyless provider (Ollama).
+    """
+
+    id: str            # "anthropic" | "openai" | "xai" | "gemini" | "mistral" | "ollama"
+    label: str         # UI label, e.g. "OpenAI (GPT)"
+    kind: str          # "anthropic" | "openai"  -> which SDK/call path
+    env_key: str       # env var holding the API key ("" for keyless, e.g. Ollama)
+    default_model: str # provider default model id (registry-isolated, easy to pin)
+    base_url: "Optional[str]"  # None = SDK default; set for xai/gemini/mistral/ollama
+    model_env: str     # per-provider model override env, e.g. "SCREENER_OPENAI_MODEL"
+
+
+# The backend registry: one native Anthropic path + an OpenAI-compatible family that
+# all share the single ``openai`` SDK and differ only by base_url / env / model. Model
+# ids here are registry-isolated DEFAULTS (tunable later in one edit each).
+PROVIDERS: "dict[str, Provider]" = {
+    "anthropic": Provider(
+        id="anthropic",
+        label="Anthropic (Claude)",
+        kind="anthropic",
+        env_key="ANTHROPIC_API_KEY",
+        default_model=DEFAULT_MODEL,
+        base_url=None,
+        model_env="SCREENER_ANTHROPIC_MODEL",
+    ),
+    "openai": Provider(
+        id="openai",
+        label="OpenAI (GPT)",
+        kind="openai",
+        env_key="OPENAI_API_KEY",
+        default_model="gpt-4.1",
+        base_url=None,
+        model_env="SCREENER_OPENAI_MODEL",
+    ),
+    "xai": Provider(
+        id="xai",
+        label="xAI (Grok)",
+        kind="openai",
+        env_key="XAI_API_KEY",
+        default_model="grok-3",
+        base_url="https://api.x.ai/v1",
+        model_env="SCREENER_XAI_MODEL",
+    ),
+    "gemini": Provider(
+        id="gemini",
+        label="Google (Gemini)",
+        kind="openai",
+        env_key="GEMINI_API_KEY",
+        default_model="gemini-2.0-flash",
+        base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
+        model_env="SCREENER_GEMINI_MODEL",
+    ),
+    "mistral": Provider(
+        id="mistral",
+        label="Mistral",
+        kind="openai",
+        env_key="MISTRAL_API_KEY",
+        default_model="mistral-large-latest",
+        base_url="https://api.mistral.ai/v1",
+        model_env="SCREENER_MISTRAL_MODEL",
+    ),
+    "ollama": Provider(
+        id="ollama",
+        label="Ollama (local)",
+        kind="openai",
+        env_key="",  # keyless: the openai SDK still needs a non-empty placeholder api_key
+        default_model="llama3.1",
+        base_url="http://localhost:11434/v1",
+        model_env="SCREENER_OLLAMA_MODEL",
+    ),
+}
+
+# Active backend when none is selected. "anthropic" preserves today's behavior exactly.
+DEFAULT_PROVIDER = "anthropic"
 
 SYSTEM_PROMPT = (
     "You convert a user's natural-language request into parameters for a US "
@@ -171,9 +267,30 @@ _TICKER_STOPWORDS = frozenset(
 _TICKER_RE = re.compile(r"\b[A-Z]{1,5}\b")
 
 
-def _resolve_model(model: Optional[str]) -> str:
-    """Resolve the model id: explicit arg > ``SCREENER_AGENT_MODEL`` env > default."""
-    return model or os.environ.get("SCREENER_AGENT_MODEL") or DEFAULT_MODEL
+def _resolve_provider(provider: Optional[str]) -> Provider:
+    """Resolve the active backend: explicit arg > ``SCREENER_AGENT_PROVIDER`` env > default.
+
+    An unknown id (from either the arg or the env var) falls back to
+    :data:`DEFAULT_PROVIDER`. NEVER raises — a no-arg / unset call resolves to the
+    Anthropic provider, so default behavior is unchanged.
+    """
+    pid = provider or os.environ.get("SCREENER_AGENT_PROVIDER") or DEFAULT_PROVIDER
+    return PROVIDERS.get(pid, PROVIDERS[DEFAULT_PROVIDER])
+
+
+def _resolve_model(provider: Provider, model: Optional[str]) -> str:
+    """Resolve the model id for ``provider``.
+
+    Precedence: explicit ``model`` arg > the provider's own ``model_env`` >
+    the global ``SCREENER_AGENT_MODEL`` (kept for back-compat) > the provider's
+    registry ``default_model``.
+    """
+    return (
+        model
+        or os.environ.get(provider.model_env)
+        or os.environ.get("SCREENER_AGENT_MODEL")
+        or provider.default_model
+    )
 
 
 # --- the safety layer: coerce + clamp ANY input, never raise -------------
@@ -427,107 +544,191 @@ def rule_based_parse(query: str, universe_sectors: Iterable[str]) -> ScreenReque
 
 
 # --- the optional LLM path -----------------------------------------------
-def agent_available() -> bool:
-    """True iff an API key is set AND the ``anthropic`` SDK is importable.
+# Shared tool description, emitted on BOTH SDK paths so the contract is identical.
+_SET_SCREEN_DESCRIPTION = (
+    "Map the user's request into stock-screener parameters. Only "
+    "translate the request into these knobs — never give buy/sell/hold "
+    "advice or opinions."
+)
 
-    Probes for the SDK with ``importlib.util.find_spec`` so it never actually
-    imports anthropic at module scope (keeping this module import-cheap and safe
-    when the optional dep is absent). Returns False on any error.
+
+def agent_available(provider: Optional[str] = None) -> bool:
+    """True iff the selected backend is usable: key present (if needed) AND SDK importable.
+
+    Resolves ``provider`` (explicit arg > ``SCREENER_AGENT_PROVIDER`` env >
+    :data:`DEFAULT_PROVIDER`). For a keyed provider the matching env var must be set
+    (skipped when ``env_key == ""``, i.e. keyless Ollama); then the needed SDK must be
+    importable — probed with ``importlib.util.find_spec`` (``anthropic`` for kind
+    ``"anthropic"``, ``openai`` for kind ``"openai"``) so it never actually imports the
+    optional dep. A no-arg call resolves to Anthropic, matching today's behavior. Returns
+    False on any error.
     """
     try:
-        if not os.environ.get("ANTHROPIC_API_KEY"):
+        p = _resolve_provider(provider)
+        if p.env_key and not os.environ.get(p.env_key):
             return False
         import importlib.util
 
-        return importlib.util.find_spec("anthropic") is not None
+        sdk = "anthropic" if p.kind == "anthropic" else "openai"
+        return importlib.util.find_spec(sdk) is not None
     except Exception:  # noqa: BLE001 - availability probe must never raise
         return False
 
 
-def _llm_extract(query: str, universe_sectors: Iterable[str], model: Optional[str]) -> dict:
-    """Call Claude with STRICT forced tool use and return the raw params dict.
+def _set_screen_schema(sector_list: "list[str]") -> dict:
+    """The ``set_screen`` JSON object schema, shared by BOTH SDK paths.
 
-    anthropic is LAZY-imported here (never at module top) so the module loads
-    without the optional dependency. The ``set_screen`` tool is ``strict=True``,
-    so every property is ``required`` and ``additionalProperties`` is False; the
-    numeric knobs carry NO ``minimum``/``maximum`` (strict forbids them — clamping
-    happens in :func:`validate_request`). The ``sectors`` enum is built from the
-    live universe so the model can only emit real sectors (still re-validated). May
-    raise — :func:`parse_query`'s broad ``except`` handles the fallback.
+    Every property is ``required`` and ``additionalProperties`` is False so the schema
+    is strict-mode-safe on both SDKs; the numeric knobs carry NO ``minimum``/``maximum``
+    (strict forbids them — clamping happens in :func:`validate_request`). The ``sectors``
+    enum is built from the live universe so the model can only emit real sectors (still
+    re-validated).
     """
-    import anthropic  # lazy, inside the function
-
-    client = anthropic.Anthropic()  # reads ANTHROPIC_API_KEY from env
-    sector_list = sorted({s for s in (universe_sectors or []) if isinstance(s, str)})
-    tool = {
-        "name": "set_screen",
-        "description": (
-            "Map the user's request into stock-screener parameters. Only "
-            "translate the request into these knobs — never give buy/sell/hold "
-            "advice or opinions."
-        ),
-        "strict": True,
-        "input_schema": {
-            "type": "object",
-            "additionalProperties": False,
-            "properties": {
-                "profile": {"type": "string", "enum": ["long_term", "swing", "momentum"]},
-                "n_names": {"type": "integer"},  # NO min/max — strict forbids; clamp in validate_request
-                "min_score": {"type": "number"},  # NO min/max
-                "sectors": (
-                    {"type": "array", "items": {"type": "string", "enum": sector_list}}
-                    if sector_list
-                    else {"type": "array", "items": {"type": "string"}}
-                ),
-                "text": {"type": "string"},
-                "earnings_only": {"type": "boolean"},
-                "explanation": {"type": "string"},
-            },
-            "required": [
-                "profile", "n_names", "min_score", "sectors", "text",
-                "earnings_only", "explanation",
-            ],
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "profile": {"type": "string", "enum": ["long_term", "swing", "momentum"]},
+            "n_names": {"type": "integer"},  # NO min/max — strict forbids; clamp in validate_request
+            "min_score": {"type": "number"},  # NO min/max
+            "sectors": (
+                {"type": "array", "items": {"type": "string", "enum": sector_list}}
+                if sector_list
+                else {"type": "array", "items": {"type": "string"}}
+            ),
+            "text": {"type": "string"},
+            "earnings_only": {"type": "boolean"},
+            "explanation": {"type": "string"},
         },
+        "required": [
+            "profile", "n_names", "min_score", "sectors", "text",
+            "earnings_only", "explanation",
+        ],
     }
-    resp = client.messages.create(
-        model=_resolve_model(model),
-        max_tokens=1024,
-        system=SYSTEM_PROMPT,
-        tools=[tool],
-        tool_choice={"type": "tool", "name": "set_screen"},
-        messages=[{"role": "user", "content": query}],
+
+
+def _parse_openai_toolcall(resp) -> dict:
+    """Extract the ``set_screen`` arguments from an OpenAI Chat Completions response.
+
+    The OpenAI-compatible APIs return the tool arguments as a JSON STRING at
+    ``resp.choices[0].message.tool_calls[0].function.arguments``; this reads that string
+    and ``json.loads`` it into the raw params dict. Raises (``ValueError``) when
+    ``tool_calls`` is missing or empty so :func:`parse_query` falls back to the offline
+    parser. Kept tiny + unit-testable against a fake response exposing that attribute
+    chain.
+    """
+    tool_calls = resp.choices[0].message.tool_calls
+    if not tool_calls:
+        raise ValueError("no tool_calls in response")
+    return json.loads(tool_calls[0].function.arguments)
+
+
+def _llm_extract(
+    query: str,
+    universe_sectors: Iterable[str],
+    provider: Provider,
+    model: Optional[str],
+) -> dict:
+    """Call the selected backend with STRICT forced tool use; return the raw params dict.
+
+    The needed SDK is LAZY-imported inside the matching branch (never at module top) so
+    the module loads without either optional dependency. Both branches build the
+    ``set_screen`` tool from :func:`_set_screen_schema`, so the contract is identical
+    across providers. May raise — :func:`parse_query`'s broad ``except`` handles the
+    fallback.
+    """
+    sector_list = sorted({s for s in (universe_sectors or []) if isinstance(s, str)})
+
+    if provider.kind == "anthropic":
+        import anthropic  # lazy, inside the function
+
+        client = anthropic.Anthropic()  # reads ANTHROPIC_API_KEY from env
+        resp = client.messages.create(
+            model=_resolve_model(provider, model),
+            max_tokens=1024,
+            system=SYSTEM_PROMPT,
+            tools=[
+                {
+                    "name": "set_screen",
+                    "description": _SET_SCREEN_DESCRIPTION,
+                    "strict": True,
+                    "input_schema": _set_screen_schema(sector_list),
+                }
+            ],
+            tool_choice={"type": "tool", "name": "set_screen"},
+            messages=[{"role": "user", "content": query}],
+        )
+        return next(b.input for b in resp.content if b.type == "tool_use")
+
+    # kind == "openai": the OpenAI-compatible Chat Completions path (OpenAI/xAI/Gemini/
+    # Mistral/Ollama). Ollama runs locally with no key, but the SDK requires a non-empty
+    # api_key string, so we pass a "ollama" placeholder; its base_url is overridable.
+    import openai  # lazy, inside the function
+
+    base_url = (
+        os.environ.get("SCREENER_OLLAMA_BASE_URL") if provider.id == "ollama" else None
+    ) or provider.base_url
+    client = openai.OpenAI(
+        base_url=base_url,
+        api_key=(os.environ.get(provider.env_key) or "ollama"),
     )
-    return next(b.input for b in resp.content if b.type == "tool_use")
+    resp = client.chat.completions.create(
+        model=_resolve_model(provider, model),
+        max_tokens=1024,
+        messages=[
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": query},
+        ],
+        tools=[
+            {
+                "type": "function",
+                "function": {
+                    "name": "set_screen",
+                    "description": _SET_SCREEN_DESCRIPTION,
+                    "strict": True,
+                    "parameters": _set_screen_schema(sector_list),
+                },
+            }
+        ],
+        tool_choice={"type": "function", "function": {"name": "set_screen"}},
+    )
+    return _parse_openai_toolcall(resp)
 
 
 def parse_query(
-    query: str, *, universe_sectors: Iterable[str], model: Optional[str] = None
+    query: str,
+    *,
+    universe_sectors: Iterable[str],
+    provider: Optional[str] = None,
+    model: Optional[str] = None,
 ) -> ScreenRequest:
-    """Parse ``query`` via the LLM when available, else the rule-based parser.
+    """Parse ``query`` via the selected LLM backend when available, else the rule parser.
 
-    Uses the LLM only when :func:`agent_available` (a key is set AND the SDK
-    imports); on ANY exception — typed anthropic errors, a malformed response, a
-    missing tool block, even anthropic not actually importable despite find_spec —
-    it falls back to :func:`rule_based_parse`. Both paths run through
-    :func:`validate_request`, so the result is always a valid, clamped request.
-    The LLM result's ``explanation`` is prefixed with ``"LLM"`` for transparency.
+    Uses the LLM only when :func:`agent_available` for the resolved ``provider`` (its key
+    is set AND its SDK imports); on ANY exception — typed SDK errors, a malformed
+    response, a missing tool block, even the SDK not actually importable despite
+    find_spec — it falls back to :func:`rule_based_parse`. Both paths run through
+    :func:`validate_request`, so the result is always a valid, clamped request. The LLM
+    result's ``explanation`` is prefixed with the provider id (e.g. ``"LLM (openai): …"``)
+    for transparency.
     """
-    if not agent_available():
+    if not agent_available(provider):
         return rule_based_parse(query, universe_sectors)
     try:
-        raw = _llm_extract(query, universe_sectors, model)  # may raise
+        p = _resolve_provider(provider)
+        raw = _llm_extract(query, universe_sectors, p, model)  # may raise
         req = validate_request(raw, universe_sectors)
         # Ensure a transparency note even if the model omitted one.
         if not req.explanation:
             req = replace(
                 req,
                 explanation=(
-                    f"LLM ({_resolve_model(model)}): "
+                    f"LLM ({p.id}, {_resolve_model(p, model)}): "
                     f"profile={req.profile}, top {req.n_names}"
                 ),
             )
         else:
-            req = replace(req, explanation="LLM: " + req.explanation)
+            req = replace(req, explanation=f"LLM ({p.id}): " + req.explanation)
         return req
     except Exception:  # noqa: BLE001 - any failure degrades to the offline parser
         return rule_based_parse(query, universe_sectors)
