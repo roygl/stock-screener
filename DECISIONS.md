@@ -4,6 +4,37 @@ Newest first. Each entry: the decision, and *why*, so nothing gets re-argued lat
 
 ---
 
+2026-06-20: **Tactical TA readouts (DONE) — explicit "Buy zone", support & resistance, and overextension/parabolic;
+this RELAXES "describe, don't advise" to "no execution + no sell/exit management, but an educational entry zone is now
+shown."** The screener now answers three tactical per-ticker questions — where is the buy zone, is the stock parabolic,
+where are support & resistance (תמיכה והתנגדות) — alongside the existing momentum/RSI/MACD/MA snapshot and chart-shape
+detection. The non-obvious choices:
+- **The "Buy zone" is the one deliberate relaxation of the locked stance.** The user chose a real, labeled entry band
+  rather than a neutral "support zone", which loosens the "ranks/describes, does not advise" rule (the bullet below; the
+  CLAUDE.md key-decision line). We honor it but keep it bounded: a **descriptive** entry band derived from the **nearest
+  historical support** (`high = support.price`, `low = support × (1 − cluster tol)`) or, failing that, a **rising-20-EMA
+  pullback** band — surfaced **with an educational not-advice disclaimer** ("Educational entry zone, not financial
+  advice") pinned by a framing-guard test and shown in both the detail panel and `BUY_ZONE_HELP`. The relaxation is
+  STRICTLY scoped: still **no execution / no broker action** and still **NO sell/exit/stop management** — only an entry
+  zone is described. A name with no support below current price shows no zone (never an invented one).
+- **Support & resistance + overextension are pure descriptive readouts, EOD only.** S/R levels are **pivot-cluster**
+  bands (greedy single-linkage clustering of `patterns.find_pivots` swings, volume-weighted centers, ≥2 touches, a 0..1
+  strength from touches/recency/tightness, nearest-first, capped per side) in a new pure `screener/levels.py` that reuses
+  the chart-pattern swing foundation with zero duplication. Overextension/parabolic lives in `screener/indicators.py`
+  (new `true_range`/`atr`/`atr_latest`/`consecutive_up_run` + a frozen `ExtensionState`): a 0..1 score blends % above
+  20/50-EMA, RSI, up-day run, acceleration, and ATR%, with a HARD FLOOR that a falling stock (≤0% above its 20-EMA) can
+  never read "parabolic". Both honor the locked end-of-day constraint — **1w / 1d / 1mo resampled from daily, NO
+  intraday / 4h** (consistent with the chart-pattern decision and the date-keyed cache) — and stay fail-soft (empty/NaN/
+  None on degenerate input, never raise); pure pandas/numpy, no scipy.
+- **Overextension state + an "in buy zone" flag are also UNIVERSE-WIDE, not just per-ticker.** `extension_state`/
+  `extension_score` join `snapshot()`/`SNAPSHOT_KEYS` and `in_buy_zone`/`dist_to_buy_zone_pct` are attached in
+  `assemble_features()` off the already-fetched daily frame (daily-only, no extra fetches), so they flow into the ranked
+  results table as a colored **Extension** badge + an **In buy zone** flag, with sidebar **filters** ("hide overextended
+  (parabolic)", "in buy zone only"). Support/resistance bands stay in the detail panel (bands don't tabulate). The S/R
+  bands and buy-zone are surfaced in the inspected-ticker panel in the existing Chart-patterns visual grammar (badges +
+  Strength `ProgressColumn` + metrics). Built via the `implement-ta-readouts` multi-agent Workflow (foundation → wiring →
+  integration → loop-until-green verify → docs).
+
 2026-06-20: **"Clear cache & rescan" now actually clears + rescans, and results name the hard filters that
 narrowed them.** Two fixes prompted by a "rescanning doesn't fetch 500, it stays at 35" report. The 35 was the
 **swing** profile working as designed (only ~35 of 500 clear `rel_volume_20 > 2×` AND `in_leading_sector`); the

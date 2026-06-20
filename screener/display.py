@@ -32,21 +32,24 @@ import pandas as pd
 from .profiles import Profile
 
 # --- module-level copy ---------------------------------------------------
-# Short disclaimer rendered in EVERY app state (the sidebar), satisfying the
-# spec §9/§10 "describes & ranks, never advises" outcome regardless of scan
-# state. The fuller text lives in app.py's disclaimer expander.
+# Short disclaimer rendered in EVERY app state (the sidebar): an always-on
+# educational, not-advice notice (now including the buy-zone caveat) shown
+# regardless of scan state. The fuller text lives in app.py's disclaimer expander.
 DISCLAIMER_TEXT = (
-    "This tool describes and ranks US large-cap equities from end-of-day data. "
-    "It is not financial advice and gives no buy/sell recommendations."
+    "This tool describes and ranks US large-cap equities from end-of-day data, "
+    "and surfaces an educational 'buy zone' (entry band). It is not financial "
+    "advice and makes no sell/exit calls."
 )
 
 DISCLAIMER_DETAIL = (
     "This screener is an educational research aid, not investment advice. It "
     "ranks and describes stocks from delayed, end-of-day data using mechanical "
-    "rules — it does not know your goals, risk tolerance, or circumstances, and "
-    "it makes no buy, sell, or hold recommendation. Signals can be wrong or "
-    "stale, and past behaviour does not predict future returns. Do your own "
-    "research and consult a licensed professional before investing."
+    "rules — it does not know your goals, risk tolerance, or circumstances. It "
+    "surfaces an educational 'buy zone' (a descriptive entry band) for context, "
+    "but makes no sell, exit, or position-sizing recommendation and cannot tell "
+    "you whether to act. Signals can be wrong or stale, and past behaviour does "
+    "not predict future returns. Do your own research and consult a licensed "
+    "professional before investing."
 )
 
 # Human labels for every feature that can surface in the table or the reasons
@@ -75,6 +78,11 @@ FEATURE_LABELS: "dict[str, str]" = {
     "rsi_health": "RSI Health",
     "pullback_quality": "Pullback Quality",
     "sector_strength_score": "Sector Strength",
+    # tactical readouts (overextension + buy zone)
+    "extension_state": "Extension",
+    "extension_score": "Extension Score",
+    "in_buy_zone": "In Buy Zone",
+    "dist_to_buy_zone_pct": "Distance To Buy Zone",
 }
 
 # Plain-English, cell-sized definition for every feature in FEATURE_LABELS. Used
@@ -104,6 +112,11 @@ FEATURE_DESCRIPTIONS: "dict[str, str]" = {
     "rsi_health": "RSI rescaled to 0–1 with an overbought penalty — strong but not stretched.",
     "pullback_quality": "Health of a pullback to the 10/20-day EMAs (0–1).",
     "sector_strength_score": "The stock's sector ranked by 3-month return (0–1).",
+    # tactical readouts (overextension + buy zone)
+    "extension_state": "How stretched above trend: normal, extended, or parabolic.",
+    "extension_score": "Overextension score (0–1); higher = more stretched above trend.",
+    "in_buy_zone": "Whether the last close sits inside the descriptive buy-zone band.",
+    "dist_to_buy_zone_pct": "Signed gap from the last close to the buy zone (0% if inside).",
 }
 
 # Column / score "?" tooltip copy. Kept here (pure, unit-testable) so app.py can
@@ -122,6 +135,33 @@ CONTRIBUTION_HELP = (
     "The rows sum to the Score."
 )
 WHAT_HELP = "What each signal measures, and which direction ranks better."
+
+# --- tactical-readout help copy (support/resistance, overextension, buy zone) -
+# Three NON-advisory captions for the per-ticker detail panel. LEVELS_HELP and
+# EXTENSION_HELP describe what the readout means; BUY_ZONE_HELP MUST carry an
+# explicit not-advice disclaimer (the guardrail for the relaxed "explicit buy
+# zone" decision — pinned by a test).
+LEVELS_HELP = (
+    "Support and resistance are price levels the stock has revisited repeatedly. "
+    "Support sits at or below the last close (buyers have stepped in there before); "
+    "resistance sits above it (sellers have). Strength (0–1) blends how many times "
+    "the level was touched, how recently, and how tightly the touches cluster. "
+    "Descriptive only — levels can break, and a touch is not a forecast."
+)
+EXTENSION_HELP = (
+    "Overextension gauges how stretched the stock is above its trend — % above the "
+    "20- and 50-day EMAs, RSI, the run of consecutive up-days, and volatility (ATR). "
+    "'Normal' is unremarkable, 'Extended' is stretched, 'Parabolic' is a steep, "
+    "potentially unsustainable run. Describes the current state — it is not a sell "
+    "signal or a price target."
+)
+BUY_ZONE_HELP = (
+    "Descriptive entry band from historical support — educational, not financial "
+    "advice. The buy zone marks a price band the stock has found support in before "
+    "(or a shallow pullback to a rising 20-day EMA); it is NOT a buy recommendation, "
+    "a price target, or a guarantee, and it carries no exit/sell call. The level can "
+    "break. Do your own research and consult a licensed professional before investing."
+)
 
 # One-line, plain-English description per profile (keyed by ``Profile.name``).
 # Feeds the profile radio's captions and the glossary intro. Descriptive only —
@@ -157,8 +197,13 @@ _PE_FEATURES = frozenset({"forward_pe", "trailing_pe"})
 _DERIVED_01_FEATURES = frozenset(
     {"ema_5_9_cross_score", "pullback_quality", "rsi_health", "sector_strength_score"}
 )
-# Boolean features.
-_BOOL_FEATURES = frozenset({"sma_stacked_20_50_150"})
+# Boolean features (Yes/No cells + checkbox columns).
+_BOOL_FEATURES = frozenset({"sma_stacked_20_50_150", "in_buy_zone"})
+# Already-fraction scores shown as a plain (unsigned) percent with two decimals —
+# distinct from _PERCENT_FEATURES (one decimal) and the signed buy-zone distance.
+_PERCENT2_FEATURES = frozenset({"extension_score"})
+# Signed-percent fractions: a leading "+"/"-" matters (gap above vs below a band).
+_SIGNED_PERCENT_FEATURES = frozenset({"dist_to_buy_zone_pct"})
 
 # The leading, human-ordered columns shown before a profile's own signals.
 _LEAD_VISIBLE = ("rank", "symbol", "name", "sector", "score")
@@ -266,8 +311,10 @@ def apply_filters(
     min_score: float,
     earnings_only: bool,
     profile: Profile,
+    extended_hidden: bool = False,
+    in_buy_zone_only: bool = False,
 ) -> pd.DataFrame:
-    """Apply the four sidebar filters to the cached result, purely in pandas.
+    """Apply the sidebar filters to the cached result, purely in pandas.
 
     Composes (all NaN-safe, all passthrough when "empty"):
 
@@ -280,6 +327,14 @@ def apply_filters(
     - ``earnings_only`` — SWING ONLY (gated via :func:`_swing_earnings_enabled`):
       keep rows whose ``earnings_in_window`` is ``True``. Ignored for non-swing
       profiles even if the column happens to exist.
+    - ``extended_hidden`` — when ``True``, DROP rows whose ``extension_state`` is
+      ``"parabolic"`` (the steep/overextended names). Only ``"parabolic"`` is hidden;
+      ``"extended"`` and ``"normal"`` stay. No-op when the column is absent; a missing
+      / ``NaN`` state is treated as non-parabolic (kept), matching the engine's
+      ``"normal"`` fail-soft baseline.
+    - ``in_buy_zone_only`` — when ``True``, KEEP only rows whose ``in_buy_zone`` is
+      truthy. No-op when the column is absent; a missing / ``NaN`` flag is treated as
+      ``False`` (dropped), matching the engine's fail-soft baseline.
 
     Returns a NEW frame with a fresh ``RangeIndex`` (``reset_index(drop=True)``)
     so positional row-selection from ``st.dataframe`` maps back to a stable
@@ -319,6 +374,22 @@ def apply_filters(
     # Swing-only earnings-in-window filter.
     if earnings_only and _swing_earnings_enabled(profile, df):
         mask &= df["earnings_in_window"].fillna(False).astype(bool)
+
+    # Hide overextended (parabolic) names. Only the "parabolic" bucket is dropped;
+    # a missing/NaN state is non-parabolic (kept), matching the "normal" baseline.
+    if extended_hidden and "extension_state" in df.columns:
+        state = df["extension_state"].astype("object")
+        is_parabolic = state.apply(
+            lambda s: (not _is_missing(s)) and str(s).strip().lower() == "parabolic"
+        )
+        mask &= ~is_parabolic
+
+    # Keep only rows currently inside the buy zone (NaN/absent flag -> dropped).
+    # Elementwise so a mixed object column (True/False/NaN) coerces cleanly without
+    # a pandas object-downcast warning; a missing flag is treated as False.
+    if in_buy_zone_only and "in_buy_zone" in df.columns:
+        in_zone = df["in_buy_zone"].apply(lambda v: (not _is_missing(v)) and bool(v))
+        mask &= in_zone
 
     return df[mask].reset_index(drop=True)
 
@@ -463,6 +534,16 @@ def column_config_spec(profile: Profile) -> "dict[str, dict]":
     if "earnings_in_window" in profile.flags:
         spec["earnings_in_window"] = {"kind": "checkbox", "label": "Earnings ≤7d"}
         spec["days_to_earnings"] = {"kind": "number", "label": "Days To Earnings", "format": "%d"}
+
+    # Universe-wide tactical-readout columns (present for every profile). The
+    # Extension cell renders as text (app.py colours the badge via
+    # extension_state_color); In Buy Zone is a checkbox like the earnings flags.
+    spec["extension_state"] = {
+        "kind": "text", "label": "Extension", "help": EXTENSION_HELP,
+    }
+    spec["in_buy_zone"] = {
+        "kind": "checkbox", "label": "In Buy Zone", "help": BUY_ZONE_HELP,
+    }
     return spec
 
 
@@ -477,7 +558,10 @@ def format_value(feature: str, value) -> str:
     - ``rsi_14`` -> ``f"{v:.0f}"``; ``macd_hist`` -> ``f"{v:.3f}"``;
     - derived [0, 1] scores (ema_5_9_cross_score, pullback_quality, rsi_health,
       sector_strength_score) -> ``f"{v:.2f}"``;
-    - bool ``sma_stacked_20_50_150`` -> ``"Yes"`` / ``"No"``;
+    - ``extension_score`` -> ``f"{v*100:.2f}%"`` (a 0..1 fraction as a percent);
+    - ``dist_to_buy_zone_pct`` -> :func:`format_signed_pct` ("+3.2%"/"-1.0%");
+    - ``extension_state`` -> the badge text via :func:`extension_badge`;
+    - bool ``sma_stacked_20_50_150`` / ``in_buy_zone`` -> ``"Yes"`` / ``"No"``;
     - missing -> ``"—"``.
     """
     if feature in _BOOL_FEATURES:
@@ -485,8 +569,18 @@ def format_value(feature: str, value) -> str:
             return _MISSING
         return "Yes" if bool(value) else "No"
 
+    # Categorical extension state -> the coloured badge text (never a float).
+    if feature == "extension_state":
+        if _is_missing(value):
+            return _MISSING
+        return extension_badge(value)
+
     if _is_missing(value):
         return _MISSING
+
+    # Signed-percent fractions delegate to the shared signed formatter.
+    if feature in _SIGNED_PERCENT_FEATURES:
+        return format_signed_pct(value)
 
     try:
         v = float(value)
@@ -495,6 +589,8 @@ def format_value(feature: str, value) -> str:
 
     if feature in _PERCENT_FEATURES:
         return f"{v * 100:.1f}%"
+    if feature in _PERCENT2_FEATURES:
+        return f"{v * 100:.2f}%"
     if feature in _PE_FEATURES:
         return f"{v:.1f}"
     if feature == "rel_volume_20":
@@ -507,6 +603,166 @@ def format_value(feature: str, value) -> str:
         return f"{v:.2f}"
     # Generic numeric fallback.
     return f"{v:.2f}"
+
+
+# --- tactical-readout formatters (S/R, overextension, buy zone) ----------
+# All pure + fail-soft: a NaN/None/degenerate input collapses to "—" (or an
+# empty frame), exactly like the engine's fail-soft cells, so app.py can render
+# them blindly. Mirrors the levels.Level / indicators.ExtensionState / levels.
+# BuyZone contracts (signed distance_pct, 0..1 strength, categorical state).
+def format_signed_pct(x) -> str:
+    """A signed percent string for a fraction: ``0.032 -> "+3.2%"``, ``-0.01 ->
+    "-1.0%"``, missing -> ``"—"``.
+
+    Always carries an explicit ``+``/``-`` (a plain ``0.0`` reads ``"+0.0%"``) so a
+    gap above vs below a band is unambiguous. The input is a FRACTION (``0.032`` ==
+    ``3.2%``), matching ``Level.distance_pct`` / ``BuyZone.distance_pct``.
+    """
+    if _is_missing(x):
+        return _MISSING
+    try:
+        v = float(x)
+    except (TypeError, ValueError):
+        return _MISSING
+    if not np.isfinite(v):
+        return _MISSING
+    return f"{v * 100:+.1f}%"
+
+
+_EXTENSION_BADGES: "dict[str, str]" = {
+    "normal": "🟢 Normal",
+    "extended": "🟠 Extended",
+    "parabolic": "🔴 Parabolic",
+}
+_EXTENSION_COLORS: "dict[str, str]" = {
+    "normal": "gray",
+    "extended": "orange",
+    "parabolic": "red",
+}
+
+
+def extension_badge(state) -> str:
+    """Emoji-prefixed badge text for an extension ``state`` string.
+
+    ``"normal" -> "🟢 Normal"``, ``"extended" -> "🟠 Extended"``, ``"parabolic" ->
+    "🔴 Parabolic"``. An unknown / missing state falls back to ``"🟢 Normal"`` (the
+    safe baseline — ``extension_state`` is never ``None`` in the engine, defaulting
+    to ``"normal"``), so this never raises.
+    """
+    key = "" if _is_missing(state) else str(state).strip().lower()
+    return _EXTENSION_BADGES.get(key, _EXTENSION_BADGES["normal"])
+
+
+def extension_state_color(state) -> str:
+    """Semantic colour name for an extension ``state`` (for ``st.badge`` etc.).
+
+    ``"normal" -> "gray"``, ``"extended" -> "orange"``, ``"parabolic" -> "red"``;
+    an unknown / missing state falls back to ``"gray"`` (the neutral baseline).
+    """
+    key = "" if _is_missing(state) else str(state).strip().lower()
+    return _EXTENSION_COLORS.get(key, _EXTENSION_COLORS["normal"])
+
+
+_LEVELS_FRAME_COLUMNS = ["Level", "Kind", "Price", "Touches", "Strength", "Distance"]
+
+
+def levels_to_frame(level_set) -> pd.DataFrame:
+    """Tidy a :class:`screener.levels.LevelSet` into a display frame.
+
+    Columns ``Level`` (humanised kind + ordinal, e.g. ``"Resistance 1"`` /
+    ``"Support 1"``), ``Kind`` (``"Support"`` / ``"Resistance"``), ``Price`` (float),
+    ``Touches`` (int), ``Strength`` (0..1 float — left numeric for a progress
+    column), and ``Distance`` (signed-percent STRING via :func:`format_signed_pct`).
+
+    Rows are resistances (nearest-above first) ABOVE supports (nearest-below first),
+    matching how a chart stacks them around the last close. Fail-soft: ``None`` / an
+    empty :class:`LevelSet` / anything without the expected ``supports`` /
+    ``resistances`` tuples yields an empty frame with the right columns (never
+    raises). ``Strength`` is coerced to a finite ``[0, 1]`` float so the progress
+    column never breaks; a non-finite ``distance_pct`` renders ``"—"``.
+    """
+    empty = pd.DataFrame({c: pd.Series(dtype="object") for c in _LEVELS_FRAME_COLUMNS})
+    if level_set is None:
+        return empty
+
+    resistances = list(getattr(level_set, "resistances", ()) or ())
+    supports = list(getattr(level_set, "supports", ()) or ())
+    if not resistances and not supports:
+        return empty
+
+    rows: "list[dict]" = []
+    # Resistances first (top of the stack), then supports — each already ordered
+    # nearest-first by levels.support_resistance.
+    for kind_label, levels_seq in (("Resistance", resistances), ("Support", supports)):
+        for i, lvl in enumerate(levels_seq, start=1):
+            try:
+                price = float(getattr(lvl, "price", float("nan")))
+            except (TypeError, ValueError):
+                price = float("nan")
+            try:
+                touches = int(getattr(lvl, "touches", 0))
+            except (TypeError, ValueError):
+                touches = 0
+            try:
+                strength = float(getattr(lvl, "strength", float("nan")))
+            except (TypeError, ValueError):
+                strength = float("nan")
+            if not np.isfinite(strength):
+                strength = 0.0
+            strength = max(0.0, min(1.0, strength))
+            rows.append(
+                {
+                    "Level": f"{kind_label} {i}",
+                    "Kind": kind_label,
+                    "Price": price,
+                    "Touches": touches,
+                    "Strength": strength,
+                    "Distance": format_signed_pct(getattr(lvl, "distance_pct", None)),
+                }
+            )
+    return pd.DataFrame(rows, columns=_LEVELS_FRAME_COLUMNS)
+
+
+def format_buy_zone(zone) -> str:
+    """A ``"$low – $high"`` band string for a :class:`screener.levels.BuyZone`.
+
+    e.g. ``"$145.20 – $148.50"``. Returns ``"—"`` for a ``None`` zone, or when
+    either edge is missing / non-finite (fail-soft — never raises). Uses an en-dash
+    with surrounding spaces to read as a range.
+    """
+    if zone is None:
+        return _MISSING
+    low = getattr(zone, "low", None)
+    high = getattr(zone, "high", None)
+    if _is_missing(low) or _is_missing(high):
+        return _MISSING
+    try:
+        lo = float(low)
+        hi = float(high)
+    except (TypeError, ValueError):
+        return _MISSING
+    if not (np.isfinite(lo) and np.isfinite(hi)):
+        return _MISSING
+    return f"${lo:.2f} – ${hi:.2f}"
+
+
+def buy_zone_caption(zone) -> str:
+    """Caption for a buy zone: its basis plus the not-advice disclaimer.
+
+    e.g. ``"Basis: nearest support · 3 touches. Educational entry zone, not
+    financial advice."``. For a ``None`` zone returns a plain ``"No buy zone below
+    the current price. Educational only, not financial advice."``. The disclaimer is
+    ALWAYS present (the guardrail for the relaxed buy-zone decision), so the caption
+    can never read as a recommendation.
+    """
+    disclaimer = "Educational entry zone, not financial advice."
+    if zone is None:
+        return f"No buy zone below the current price. {disclaimer}"
+    basis = getattr(zone, "basis", None)
+    basis_str = "" if _is_missing(basis) else str(basis).strip()
+    if basis_str:
+        return f"Basis: {basis_str}. {disclaimer}"
+    return disclaimer
 
 
 # --- the "why it ranks" reasons table ------------------------------------

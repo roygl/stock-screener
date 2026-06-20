@@ -51,6 +51,29 @@ def _frame(close, volume=None):
     )
 
 
+def _ohlc_frame(rows):
+    """A canonical price frame from explicit ``(high, low, close)`` rows.
+
+    ``open`` mirrors ``close`` and ``volume`` is constant — only high/low/close
+    matter for true-range / ATR. Oldest-first daily 'date' index.
+    """
+    idx = pd.date_range("2024-01-01", periods=len(rows), freq="D")
+    idx.name = "date"
+    high = [float(h) for h, _, _ in rows]
+    low = [float(lo) for _, lo, _ in rows]
+    close = [float(c) for _, _, c in rows]
+    return pd.DataFrame(
+        {
+            "open": close,
+            "high": high,
+            "low": low,
+            "close": close,
+            "volume": [1_000_000.0] * len(rows),
+        },
+        index=idx,
+    )
+
+
 def _isnan(x) -> bool:
     return isinstance(x, float) and math.isnan(x)
 
@@ -495,6 +518,159 @@ def test_latest_ema_cross_empty_safe():
     assert res.to_dict()["state"] in {"bullish", "bearish"}
 
 
+# --- true_range / atr ----------------------------------------------------
+def test_true_range_hand_checked():
+    # Bar 0: no prev close -> high-low = 10-8 = 2.
+    # Bar 1: prev_close=9 -> max(12-9=3, |12-9|=3, |9-9|=0) = 3.
+    # Bar 2: prev_close=11 -> max(11-7=4, |11-11|=0, |7-11|=4) = 4.
+    df = _ohlc_frame([(10, 8, 9), (12, 9, 11), (11, 7, 8)])
+    tr = ind.true_range(df)
+    assert len(tr) == 3
+    assert math.isclose(tr.iloc[0], 2.0)
+    assert math.isclose(tr.iloc[1], 3.0)
+    assert math.isclose(tr.iloc[2], 4.0)
+
+
+def test_true_range_gap_beats_high_low():
+    # A gap up makes |high - prev_close| exceed the intrabar high-low range.
+    df = _ohlc_frame([(10, 9, 10), (20, 19, 20)])  # prev_close 10, high 20
+    tr = ind.true_range(df)
+    assert math.isclose(tr.iloc[1], 20.0 - 10.0)  # 10, not the 1.0 high-low
+
+
+def test_true_range_empty_is_empty():
+    empty = pd.DataFrame(columns=["open", "high", "low", "close", "volume"])
+    assert len(ind.true_range(empty)) == 0
+
+
+def test_atr_positive_and_length_preserved():
+    rng = np.random.default_rng(3)
+    close = _series(100 + np.cumsum(rng.normal(0, 1, 60)))
+    df = _frame(close)  # high==low==close here, but diffs across bars give TR > 0
+    a = ind.atr(df, 14)
+    assert len(a) == len(df)
+    tail = a.dropna()
+    assert len(tail) > 0
+    assert (tail >= 0.0).all()
+
+
+def test_atr_warmup_is_nan_then_defined():
+    df = _ohlc_frame([(i + 1.0, i - 0.5, i + 0.5) for i in range(1, 21)])
+    a = ind.atr(df, 14)
+    assert math.isnan(a.iloc[12])      # first n-1 == 13 values NaN
+    assert not math.isnan(a.iloc[13])  # seed at index n-1
+
+
+def test_atr_constant_range_equals_that_range():
+    # Every bar spans exactly 2.0; first bar TR = high-low = 2.0 too, so the
+    # Wilder seed and recursion both stay at 2.0.
+    rows = [(c + 1.0, c - 1.0, float(c)) for c in range(10, 50)]
+    a = ind.atr(_ohlc_frame(rows), 14)
+    assert math.isclose(a.iloc[-1], 2.0, abs_tol=1e-9)
+
+
+def test_atr_latest_matches_series():
+    rng = np.random.default_rng(5)
+    df = _frame(_series(100 + np.cumsum(rng.normal(0, 1, 50))))
+    assert math.isclose(ind.atr_latest(df, 14), ind.atr(df, 14).iloc[-1])
+
+
+def test_atr_latest_short_frame_is_nan():
+    df = _frame([10, 11, 12])  # fewer than n=14 bars
+    assert _isnan(ind.atr_latest(df, 14))
+
+
+# --- consecutive_up_run --------------------------------------------------
+def test_consecutive_up_run_known_sequence():
+    # ...,7,5,6,7,8,9 -> last five strictly rising (5<6<7<8<9): run of 4 from the
+    # 6 onward? Count back: 9>8,8>7,7>6,6>5 -> 4; then 5>7 is False -> stop.
+    s = _series([1, 2, 7, 5, 6, 7, 8, 9])
+    assert ind.consecutive_up_run(s) == 4
+
+
+def test_consecutive_up_run_zero_when_last_bar_down():
+    s = _series([1, 2, 3, 4, 3])  # last bar is a down-close
+    assert ind.consecutive_up_run(s) == 0
+
+
+def test_consecutive_up_run_zero_when_last_bar_flat():
+    s = _series([1, 2, 3, 3])  # last bar equal -> not strictly up
+    assert ind.consecutive_up_run(s) == 0
+
+
+def test_consecutive_up_run_all_rising():
+    s = _series(range(1, 11))  # nine up-moves over ten bars
+    assert ind.consecutive_up_run(s) == 9
+
+
+def test_consecutive_up_run_short_input_is_zero():
+    assert ind.consecutive_up_run(_series([5])) == 0
+    assert ind.consecutive_up_run(pd.Series(dtype="float64")) == 0
+
+
+# --- extension_state -----------------------------------------------------
+def _parabolic_close():
+    """A steep, accelerating advance: late bars rip far above the 20/50-EMA."""
+    base = list(100 + np.arange(60) * 0.2)            # gentle ramp to seed the MAs
+    blow_off = list(base[-1] + np.cumsum(np.arange(1, 26) * 0.9))  # accelerating tail
+    return _series(base + blow_off)
+
+
+def test_extension_state_parabolic_on_steep_accelerating():
+    res = ind.extension_state(_frame(_parabolic_close()))
+    assert res.state == "parabolic"
+    assert res.score >= ind.PARABOLIC_CUT
+    assert res.pct_above_ema20 > 0.0
+    assert res.up_run >= 1
+    assert isinstance(res.to_dict(), dict)
+
+
+def test_extension_state_normal_on_flat():
+    res = ind.extension_state(_frame([100.0] * 120))
+    assert res.state == "normal"
+    assert math.isclose(res.score, 0.0, abs_tol=1e-9) or res.score < ind.EXTENDED_CUT
+    # flat -> sitting on its own EMAs, RSI 50, no up-run
+    assert abs(res.pct_above_ema20) < 1e-9
+    assert res.up_run == 0
+
+
+def test_extension_state_not_parabolic_on_volatile_downtrend():
+    # A falling stock, volatile enough to light up ATR, must never read parabolic:
+    # the pct_above_ema20 > 0 hard floor blocks it.
+    rng = np.random.default_rng(9)
+    down = 300 - np.arange(120) * 1.5 + rng.normal(0, 3, 120)
+    res = ind.extension_state(_frame(_series(down)))
+    assert res.state != "parabolic"
+    assert res.pct_above_ema20 <= 0.0
+
+
+def test_extension_state_fail_soft_empty():
+    empty = pd.DataFrame(
+        columns=["open", "high", "low", "close", "volume"],
+        index=pd.DatetimeIndex([], name="date"),
+    )
+    res = ind.extension_state(empty)
+    assert res.state == "normal"
+    assert math.isclose(res.score, 0.0)
+    assert _isnan(res.pct_above_ema20)
+    assert _isnan(res.atr_pct)
+    assert res.up_run == 0
+
+
+def test_extension_state_fail_soft_short():
+    res = ind.extension_state(_frame([10, 11, 12]))
+    assert res.state == "normal"
+    assert math.isclose(res.score, 0.0)
+    assert res.up_run == 0
+
+
+def test_extension_state_missing_close_column_safe():
+    df = pd.DataFrame({"volume": [1.0, 2.0, 3.0]})
+    res = ind.extension_state(df)
+    assert res.state == "normal"
+    assert _isnan(res.rsi)
+
+
 # --- snapshot ------------------------------------------------------------
 EXPECTED_KEYS = {
     "momentum_1m", "momentum_3m", "momentum_6m", "momentum_12m",
@@ -503,6 +679,7 @@ EXPECTED_KEYS = {
     "sma_20", "sma_50", "sma_150", "ema_5", "ema_9",
     "price_above_sma_20", "price_above_sma_50", "price_above_sma_150",
     "sma_stacked_20_50_150", "ema_5_9_state", "ema_5_9_event",
+    "extension_state", "extension_score",
 }
 
 
@@ -523,6 +700,34 @@ def test_snapshot_values_are_finite_on_long_frame():
     assert snap["ema_5_9_event"] in {"up", "down", "none"}
     assert isinstance(snap["price_above_sma_20"], bool)
     assert isinstance(snap["sma_stacked_20_50_150"], bool)
+
+
+def test_snapshot_contains_extension_keys():
+    # Assert PRESENCE + types of the two new universe-wide keys (not exact equality
+    # to any external key set — engine.SNAPSHOT_KEYS is out of scope here).
+    close = _series(100 + np.arange(80) * 0.3)
+    snap = ind.snapshot(_frame(close))
+    assert "extension_state" in snap
+    assert "extension_score" in snap
+    assert isinstance(snap["extension_state"], str)
+    assert snap["extension_state"] in {"normal", "extended", "parabolic"}
+    assert isinstance(snap["extension_score"], float)
+    assert 0.0 <= snap["extension_score"] <= 1.0
+
+
+def test_snapshot_extension_keys_present_on_short_and_empty():
+    # Fail-soft: the keys exist even when the frame is too short or empty, with the
+    # neutral default ("normal" / 0.0).
+    short = ind.snapshot(_frame([10, 11, 12]))
+    assert short["extension_state"] == "normal"
+    assert math.isclose(short["extension_score"], 0.0)
+    empty = pd.DataFrame(
+        columns=["open", "high", "low", "close", "volume"],
+        index=pd.DatetimeIndex([], name="date"),
+    )
+    snap = ind.snapshot(empty)
+    assert "extension_state" in snap and "extension_score" in snap
+    assert snap["extension_state"] == "normal"
 
 
 def test_snapshot_degrades_on_short_frame():
