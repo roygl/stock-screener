@@ -4,6 +4,22 @@ Newest first. Each entry: the decision, and *why*, so nothing gets re-argued lat
 
 ---
 
+2026-06-20: **Deploy host = Streamlit Community Cloud (free), NOT Cloudflare.** The user asked to "upload to
+Cloudflare," but the app is a long-running Streamlit (Tornado + WebSocket) server with native deps
+(`pandas`/`numpy`/`pyarrow`/`yfinance`), which **cannot** run on Cloudflare Workers or Pages — the only CF path is
+**Containers** (a Worker + Durable Object fronting a Docker image), which requires a Workers **Paid** plan (~$5/mo).
+After comparing hosts we chose **Streamlit Community Cloud**: free, purpose-built, deploys `app.py` straight from
+GitHub (`roygl/stock-screener`, branch `main`) off `requirements.txt`, no Dockerfile. The non-obvious bits:
+- **Deploy-ready as-is, zero repo changes.** Pure-pip deps ⇒ no `packages.txt`; the `requirements.txt` `>=` floors
+  resolve cleanly on Cloud's newer Python (recommend pinning **Python 3.12** in Advanced settings); `.gitignore`
+  already excludes `.venv/` / `.cache/` / `*.zip` / `.streamlit/secrets.toml`.
+- **No required secrets — offline-first holds.** With no key the agent degrades to the rule-based parser, so the
+  core screener runs unauthenticated. The optional LLM agent needs its provider key set as a **TOP-LEVEL** key in
+  the Cloud secrets manager: Streamlit exports only root-level secrets as env vars (which the `anthropic`/`openai`
+  SDKs read) — keys nested under a `[section]` are NOT exported and would silently leave the agent in rule-based mode.
+- **RAM fallback = Hugging Face Spaces** (free, ~16 GB) if a full-universe scan ever OOMs the ~1 GB Community tier;
+  same repo, no code changes. Runbook lives in `DEPLOY.md`.
+
 2026-06-20: **"Surface what we compute" — fit-score + per-row narrative + signal radar + CSV, and a DOUBLE-CLICK
 st-aggrid results table.** A presentation upgrade (off a competitive read: Finviz/TradingView/Stock Rover/ChartMill/
 Simply Wall St/Danelfin/…) — we already compute a composite score + a per-signal percentile breakdown but presented
