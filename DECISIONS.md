@@ -4,6 +4,38 @@ Newest first. Each entry: the decision, and *why*, so nothing gets re-argued lat
 
 ---
 
+2026-06-20: **"Surface what we compute" — fit-score + per-row narrative + signal radar + CSV, and a DOUBLE-CLICK
+st-aggrid results table.** A presentation upgrade (off a competitive read: Finviz/TradingView/Stock Rover/ChartMill/
+Simply Wall St/Danelfin/…) — we already compute a composite score + a per-signal percentile breakdown but presented
+them like a spreadsheet, so this turns that into the visual idioms the market expects, plus the user's explicit ask
+for a double-click row selector. The non-obvious choices:
+- **All surfacing logic stays PURE in `screener/display.py`** (still streamlit-free, offline-tested): `fit_score`
+  (0..1 score → 0..100 int), `narrative`/`narrative_series` (the per-row "Strongest on X … weakest on Y" clause,
+  factored out of `explain_rank` via a shared `_highlight_clause` so the inspector summary stays byte-identical),
+  `radar_spec` + `radar_svg` (a self-contained **pure-SVG snowflake STRING** — one axis per signal, value = the
+  signal's percentile; zero new runtime dep, fully unit-testable), and `export_frame` (CSV of the filtered view).
+  The synthetic `fit` and `why` columns ride the existing derived-column seam (`_with_link_columns` →
+  `_with_derived_columns` + `column_order`/`column_config_spec`); the visible table now leads with **Fit (0..100)**
+  in place of the raw 0..1 `score` (the `score` descriptor is retained for the still-0..1 min-score filter). Detail
+  panel: a "Fit score N / 100" hero replaces the 0.xxx metric, and the radar renders ABOVE the reasons table via
+  `st.components.v1.html` (an isolated iframe, so the SVG uses explicit theme-robust colours, not host CSS vars).
+  `tests/test_display.py` +9 cases (302 total green).
+- **DOUBLE-CLICK selection ⇒ st-aggrid (a new dep), because native `st.dataframe` is single-click only.** The main
+  results table is now an `AgGrid` (`suppressRowClickSelection=True` + an `onRowDoubleClicked` JsCode
+  `setSelected(true)`, `update_mode=SELECTION_CHANGED` so sort/filter do NOT rerun the engine — the cold-scan guard
+  holds); the inspect selectbox stays as a fallback and `resolve_selection` is unchanged. The pure
+  `column_config_spec` descriptor is realised as AgGrid colDefs in app.py (the new purity boundary, replacing
+  `_build_column_config`). Three st-aggrid 1.0.5 gotchas, all caught by a live browser smoke-test and fixed:
+  (1) it defaults to **AG Grid Enterprise** (trial WATERMARK) → `enable_enterprise_modules=False` (Community);
+  (2) this AG Grid React build accepts **neither** an HTML-string cellRenderer (escaped to raw text) **nor** a
+  DOM-node one (**React error #31**) → render ONLY via `valueFormatter` (plain text) + `cellStyle` (a plain style
+  object); the Fit "bar" is a `cellStyle` background gradient behind the number, never a cellRenderer; (3) so the
+  per-ticker external-link columns are **dropped from the grid** (the detail panel already has TradingView/Yahoo
+  link buttons) — which also trims the wide table. `streamlit-aggrid>=1.0.5` added to requirements (its setup.py
+  over-pins `altair<5`; altair 5 works fine and streamlit 1.50 prefers it — kept altair>=5). Built on a branch off
+  the reconciled tree carrying the tactical TA readouts; overextension / support-resistance / buy-zone and the TA
+  filters are all preserved.
+
 2026-06-20: **The NL agent's LLM backend is now SWAPPABLE via a provider registry — Anthropic native plus an
 OpenAI-compatible family over one optional `openai` SDK.** Generalizes the Anthropic-only agent (`screener/agent.py`)
 so the user can pick the engine and so adding backends is a one-line edit. The non-obvious choices:
