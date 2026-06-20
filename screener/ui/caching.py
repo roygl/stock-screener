@@ -18,22 +18,33 @@ from screener.universe import load_universe
 
 # --- memoized scan -------------------------------------------------------
 @st.cache_data(show_spinner=False)
-def run_cached(profile_name: str, n_names: int, cache_day: str) -> pd.DataFrame:
-    """Run the engine once per (profile, size, day) and memoize the result.
+def run_cached(
+    profile_name: str, n_names: int, cache_day: str, include_symbol: str = ""
+) -> pd.DataFrame:
+    """Run the engine once per (profile, size, day, include_symbol) and memoize it.
 
-    The key is the hashable tuple ``(profile_name, n_names, cache_day)`` — never
-    the DataFrame or provider, which are rebuilt inside. ``cache_day`` is
-    ``date.today().isoformat()``: it aligns this in-memory memo with cache.py's
-    DATE-KEYED on-disk cache and ``run_screen``'s ``as_of = today`` default, so a
-    same-day re-pick of the same (profile, size) is an instant hit and can never
+    The key is the hashable tuple ``(profile_name, n_names, cache_day,
+    include_symbol)`` — never the DataFrame or provider, which are rebuilt inside.
+    ``cache_day`` is ``date.today().isoformat()``: it aligns this in-memory memo
+    with cache.py's DATE-KEYED on-disk cache and ``run_screen``'s ``as_of = today``
+    default, so a same-day re-pick of the same key is an instant hit and can never
     diverge from the on-disk price/fundamentals/earnings files. (Do NOT drop the
-    day from the key — that would let a stale cross-day result be served.) The
-    returned frame's ``reasons`` OrderedDict column pickles cleanly through
+    day from the key — that would let a stale cross-day result be served.)
+
+    ``include_symbol`` is ``""`` for every NORMAL scan, so normal scans of the same
+    (profile, size, day) share ONE memo entry. It is non-empty only when an NL query
+    names an in-universe ticker that ranks past ``n_names``: :func:`universe_slice`
+    then unions that one row into the scanned slice. Filtering never calls
+    ``run_cached`` (it operates on the already-stored scan), so threading
+    ``include_symbol`` through the key can never trigger a refetch-on-filter.
+
+    The returned frame's ``reasons`` OrderedDict column pickles cleanly through
     ``st.cache_data`` (verified).
     """
     from screener.engine import run_screen
+    from screener.universe import universe_slice
 
-    return run_screen(profile_name, load_universe().head(n_names))
+    return run_screen(profile_name, universe_slice(load_universe(), n_names, include_symbol))
 
 
 @st.cache_data(show_spinner=False)

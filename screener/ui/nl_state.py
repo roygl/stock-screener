@@ -87,5 +87,22 @@ def handle_interpret(interpret_clicked: bool, universe_sectors: list) -> None:
             universe_sectors=universe_sectors,
             provider=st.session_state.get("nl_provider"),
         )
+        # If the query named a ticker that ISN'T in the universe yet, fetch it via the
+        # provider and persist it to data/universe.csv so the scan can include it.
+        # ensure_symbol self-guards: a non-ticker or already-present symbol makes NO
+        # network call and returns False. Imported lazily so this module — and the
+        # Interpret handler's hot path — stay import-cheap. agent.parse_query stays
+        # network-free; the only network touch lives here, after parsing.
+        from screener.universe import ensure_symbol
+
+        added = ensure_symbol((req.text or "").strip())
+        if added:
+            # A brand-new row landed in the universe. Drop the engine memo so a
+            # full-universe scan computed earlier today is recomputed to include it
+            # (cache_day alone wouldn't invalidate it). Lazy import avoids pulling the
+            # streamlit-cached module unless we actually added a symbol.
+            from screener.ui.caching import run_cached
+
+            run_cached.clear()
         stage_nl_request(req)
         st.rerun()
