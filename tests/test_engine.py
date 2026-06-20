@@ -38,6 +38,14 @@ def _isnan(x) -> bool:
     return isinstance(x, float) and math.isnan(x)
 
 
+def _finite_num(x) -> bool:
+    """True for a real, finite number (tolerates numpy scalars; rejects NaN/None)."""
+    try:
+        return bool(np.isfinite(x))
+    except (TypeError, ValueError):
+        return False
+
+
 def _make_frame(
     n=300,
     *,
@@ -500,6 +508,40 @@ def test_assemble_features_empty_price_frame_is_failsoft():
     # Falls back to the universe name/sector when fundamentals are empty.
     assert feats.loc["BAD", "sector"] == "Energy"
     assert bool(feats.loc["BAD", "earnings_in_window"]) is False
+
+
+def test_assemble_features_has_extension_and_buy_zone_columns():
+    # The TA-readout columns (overextension + daily buy zone) flow into the frame.
+    frame = _make_frame(vol_spike=True, seed=3)
+    provider = FakeProvider(frames={"AAA": frame})
+    feats = eng.assemble_features(_universe([("AAA", "Alpha", "Tech")]), provider, as_of=AS_OF)
+    for col in ("extension_state", "extension_score", "in_buy_zone", "dist_to_buy_zone_pct"):
+        assert col in feats.columns, f"missing column {col}"
+    # extension_* are the two new snapshot keys: a real string + a [0,1] float.
+    assert isinstance(feats.loc["AAA", "extension_state"], str)
+    assert feats.loc["AAA", "extension_state"] in {"normal", "extended", "parabolic"}
+    score = feats.loc["AAA", "extension_score"]
+    assert _finite_num(score) and 0.0 <= float(score) <= 1.0
+    # in_buy_zone is a real bool; dist_to_buy_zone_pct is a float (finite or NaN).
+    assert bool(feats.loc["AAA", "in_buy_zone"]) in (True, False)
+    dist = feats.loc["AAA", "dist_to_buy_zone_pct"]
+    assert isinstance(dist, float) or _isnan(dist)
+    # And the two snapshot keys are tracked in SNAPSHOT_KEYS so the NaN-fill schema
+    # for empty tickers stays in sync with snapshot()'s output.
+    assert "extension_state" in eng.SNAPSHOT_KEYS
+    assert "extension_score" in eng.SNAPSHOT_KEYS
+
+
+def test_assemble_features_buy_zone_failsoft_on_empty_prices():
+    # A ticker with no price frame: in_buy_zone defaults to False and the distance
+    # to NaN, with no exception (mirrors the snapshot/derived fails-closed ethos).
+    provider = FakeProvider(frames={})  # every symbol -> empty frame
+    feats = eng.assemble_features(_universe([("BAD", "Bad Co", "Energy")]), provider, as_of=AS_OF)
+    assert bool(feats.loc["BAD", "in_buy_zone"]) is False
+    assert _isnan(feats.loc["BAD", "dist_to_buy_zone_pct"])
+    # Overextension safe baseline on the empty path: a real "normal" string + 0.0.
+    assert feats.loc["BAD", "extension_state"] == "normal"
+    assert float(feats.loc["BAD", "extension_score"]) == 0.0
 
 
 def test_assemble_features_earnings_out_of_window_false():

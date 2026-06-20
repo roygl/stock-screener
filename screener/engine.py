@@ -8,10 +8,10 @@ A :class:`~screener.profiles.Profile` (M4) says *what* to screen on (hard filter
 
 - :func:`assemble_features` fans the universe out through the
   :class:`~screener.provider.DataProvider`, turning each ticker's price frame into
-  the 21 :func:`~screener.indicators.snapshot` keys, joins the fundamentals
-  columns, and adds the engine's DERIVED features (the swing band logic baked into
-  higher-is-better ``[0, 1]`` scores, plus the earnings-window flag). One row per
-  ticker, indexed by ``symbol``.
+  the :func:`~screener.indicators.snapshot` keys, joins the fundamentals columns,
+  and adds the engine's DERIVED features (the swing band logic baked into
+  higher-is-better ``[0, 1]`` scores, the daily buy-zone flag/distance, plus the
+  earnings-window flag). One row per ticker, indexed by ``symbol``.
 - :func:`compute_sector_strength` ranks the GICS sectors by median 3-month member
   return (DECISIONS.md: top-3 = "leading") and writes the per-row sector columns
   the swing filter and signal consume — over the FULL universe, before filtering.
@@ -40,6 +40,7 @@ from collections import OrderedDict
 import numpy as np
 import pandas as pd
 
+from . import levels
 from .indicators import latest_ema_cross, pct_from_ma, snapshot
 from .profiles import Profile, get_profile
 from .provider import DataProvider, YFinanceProvider
@@ -47,8 +48,10 @@ from .universe import load_universe
 
 log = logging.getLogger(__name__)
 
-# The 21 keys snapshot() emits, in order — used to seed an all-NaN/None row for a
+# The 23 keys snapshot() emits, in order — used to seed an all-NaN/None row for a
 # ticker whose price frame is empty (so the column schema is stable regardless).
+# extension_state (str) / extension_score (float) are the overextension readout; the
+# string key is given a safe-default string below (mirroring ema_5_9_state), not NaN.
 SNAPSHOT_KEYS = (
     "momentum_1m", "momentum_3m", "momentum_6m", "momentum_12m",
     "rsi_14", "macd", "macd_signal", "macd_hist",
@@ -56,6 +59,7 @@ SNAPSHOT_KEYS = (
     "sma_20", "sma_50", "sma_150", "ema_5", "ema_9",
     "price_above_sma_20", "price_above_sma_50", "price_above_sma_150",
     "sma_stacked_20_50_150", "ema_5_9_state", "ema_5_9_event",
+    "extension_state", "extension_score",
 )
 
 # Fundamentals columns lifted off the Fundamentals dataclass (symbol is the index).
@@ -160,9 +164,10 @@ def _empty_feature_row() -> dict:
     """A fully-NaN/None feature row for a ticker with no usable price history.
 
     Mirrors :func:`screener.indicators.snapshot` on an empty frame (floats ->
-    ``NaN``; the two string fields -> their missing-safe defaults; the stack flag
-    -> ``False``) plus the derived columns, so the assembled frame's column schema
-    is identical whether or not a ticker had data.
+    ``NaN``; the string fields -> their missing-safe defaults; the stack flag
+    -> ``False``; ``extension_state`` -> ``"normal"`` / ``extension_score`` ->
+    ``0.0``) plus the derived columns, so the assembled frame's column schema is
+    identical whether or not a ticker had data.
     """
     row = {k: float("nan") for k in SNAPSHOT_KEYS}
     row["price_above_sma_20"] = None
@@ -171,6 +176,10 @@ def _empty_feature_row() -> dict:
     row["sma_stacked_20_50_150"] = False
     row["ema_5_9_state"] = "bearish"
     row["ema_5_9_event"] = "none"
+    # Overextension safe defaults match snapshot() on a degenerate frame: a real
+    # string "normal" (never None/NaN) and a 0.0 score (never NaN).
+    row["extension_state"] = "normal"
+    row["extension_score"] = 0.0
     return row
 
 
@@ -196,12 +205,15 @@ def assemble_features(
     """Build the one-row-per-ticker feature matrix the engine ranks.
 
     For every symbol in ``universe_df`` this pulls ``provider.price_history`` and
-    reduces it to the 21 :func:`~screener.indicators.snapshot` keys, joins the
+    reduces it to the :func:`~screener.indicators.snapshot` keys, joins the
     ``provider.fundamentals`` columns, and computes the derived features:
 
     - ``pct_from_ema_10`` / ``pct_from_ema_20`` — close vs the 10/20-bar EMA;
     - ``pullback_quality`` / ``rsi_health`` / ``ema_5_9_cross_score`` — the swing
       band logic baked into higher-is-better ``[0, 1]`` scores;
+    - ``in_buy_zone`` (bool) and ``dist_to_buy_zone_pct`` (float, signed; ``NaN``
+      when there is no zone) — the daily :func:`~screener.levels.buy_zone` scalars,
+      computed off the already-fetched frame (``False``/``NaN`` on a bad ticker);
     - ``earnings_in_window`` (bool) and ``days_to_earnings`` (int|None) from
       ``provider.earnings_date`` vs ``as_of`` (default ``date.today()``).
 
@@ -235,11 +247,26 @@ def assemble_features(
             cross_score = ema_5_9_cross_score(
                 cross.state, cross.event, cross.bars_since_cross
             )
+            # Daily-only buy zone, reusing the already-fetched frame (no extra
+            # fetch). buy_zone() is fail-soft, but wrap defensively: any failure
+            # -> not-in-zone / NaN distance, matching the engine's fails-closed ethos.
+            try:
+                zone = levels.buy_zone(prices, timeframe="1d")
+                in_buy_zone = bool(zone.in_zone) if zone is not None else False
+                dist_to_buy_zone_pct = (
+                    float(zone.distance_pct) if zone is not None else float("nan")
+                )
+            except Exception as exc:  # defensive; buy_zone is documented fail-soft
+                log.warning("buy_zone(%s) raised in assemble_features: %s", symbol, exc)
+                in_buy_zone = False
+                dist_to_buy_zone_pct = float("nan")
         else:
             snap = _empty_feature_row()
             pct_ema_10 = float("nan")
             pct_ema_20 = float("nan")
             cross_score = 0.0
+            in_buy_zone = False
+            dist_to_buy_zone_pct = float("nan")
 
         # --- fundamentals (fail-soft) ------------------------------------
         try:
@@ -271,6 +298,9 @@ def assemble_features(
         row["pullback_quality"] = pullback_quality(pct_ema_10, pct_ema_20)
         row["rsi_health"] = rsi_health(snap["rsi_14"])
         row["ema_5_9_cross_score"] = cross_score
+        # Daily buy-zone scalars (universe-wide): bool flag + signed distance.
+        row["in_buy_zone"] = bool(in_buy_zone)
+        row["dist_to_buy_zone_pct"] = dist_to_buy_zone_pct
         row["earnings_in_window"] = bool(in_window)
         row["days_to_earnings"] = days_to
         rows.append(row)

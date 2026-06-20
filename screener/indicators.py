@@ -317,22 +317,226 @@ def latest_ema_cross(close: pd.Series, fast: int = EMA_FAST, slow: int = EMA_SLO
     return EmaCrossState(state=state, event=event, bars_since_cross=bars_since)
 
 
+# --- ATR / true range ----------------------------------------------------
+def true_range(df: pd.DataFrame) -> pd.Series:
+    """Wilder's True Range per bar as a ``Series`` aligned to ``df``'s index.
+
+    ``TR = max(high - low, |high - prev_close|, |low - prev_close|)`` — captures
+    gaps that a plain ``high - low`` misses. The first bar has no prior close, so
+    its TR falls back to ``high - low`` (the ``|·prev_close|`` legs are ``NaN``
+    there and dropped by the column-wise ``max``). Empty / missing-column input
+    yields an empty float ``Series`` (never raises); any wholly-undefined bar is
+    ``NaN``.
+    """
+    if df is None or len(df) == 0 or not {"high", "low", "close"} <= set(df.columns):
+        return pd.Series(dtype="float64")
+    high = df["high"].astype("float64")
+    low = df["low"].astype("float64")
+    prev_close = df["close"].astype("float64").shift(1)
+    hl = high - low
+    hc = (high - prev_close).abs()
+    lc = (low - prev_close).abs()
+    # Column-wise max ignores the first bar's NaN gap legs (skipna=True default).
+    return pd.concat([hl, hc, lc], axis=1).max(axis=1)
+
+
+def atr(df: pd.DataFrame, n: int = 14) -> pd.Series:
+    """Average True Range via Wilder smoothing (RMA, α = 1/n) of :func:`true_range`.
+
+    Consistent with the file's Wilder RMA used in :func:`rsi` (NOT pandas ``ewm``):
+    the first ATR is the simple mean of the first ``n`` true ranges, placed at index
+    ``n - 1``; thereafter ``atr = (atr·(n-1) + tr) / n``. The first ``n - 1`` values
+    are ``NaN`` (insufficient history). Aligned to ``df``'s index. Empty / too-short
+    (``< n`` bars) input yields an all-``NaN`` ``Series`` of the input length (never
+    raises).
+    """
+    tr = true_range(df)
+    out = pd.Series(np.nan, index=df.index if df is not None else None, dtype="float64")
+    if len(tr) < n or n < 1:
+        return out
+
+    tr_vals = tr.to_numpy()
+    values = np.full(len(tr), np.nan)
+    # Seed at index n-1: simple mean of the first n true ranges.
+    values[n - 1] = np.nanmean(tr_vals[:n])
+    for i in range(n, len(tr)):
+        values[i] = (values[i - 1] * (n - 1) + tr_vals[i]) / n
+    out.iloc[:] = values
+    return out
+
+
+def atr_latest(df: pd.DataFrame, n: int = 14) -> float:
+    """Latest :func:`atr` value as a ``float`` (``NaN`` if fewer than ``n`` bars)."""
+    return latest(atr(df, n))
+
+
+def consecutive_up_run(close: pd.Series) -> int:
+    """Number of consecutive up-closes ending AT the last bar (``int``).
+
+    Counts back from the final bar while each close is strictly greater than the
+    prior close: ``0`` if the last bar is not an up-close (flat or down) or there
+    is too little history (``< 2`` bars). A clean five-bar advance ending today
+    reads ``5``.
+    """
+    if close is None or len(close) < 2:
+        return 0
+    diffs = close.to_numpy(dtype="float64")
+    run = 0
+    for i in range(len(diffs) - 1, 0, -1):
+        if diffs[i] > diffs[i - 1]:
+            run += 1
+        else:
+            break
+    return run
+
+
+# --- overextension / parabolic -------------------------------------------
+# Sub-score thresholds (module-top, tunable — isolated like the cut-points below).
+# Each maps a raw reading to [0, 1] via a linear ramp clamped at both ends; the
+# composite score is the mean of the six sub-scores. First-guess constants — tune
+# against a few real names.
+EXT_PCT20_FULL = 0.20   # >= 20% above the 20-EMA -> sub-score 1.0
+EXT_PCT50_FULL = 0.35   # >= 35% above the 50-EMA -> sub-score 1.0
+EXT_RSI_LO, EXT_RSI_HI = 55.0, 80.0  # RSI ramps 55->80 onto 0->1
+EXT_ACCEL_FULL = 0.05   # accel (1m mom minus 1/3 of 3m mom) >= 5% -> 1.0
+EXT_RUN_FULL = 6        # a 6-bar up-run -> 1.0
+EXT_ATRP_FULL = 0.05    # ATR >= 5% of last close -> 1.0 (elevated volatility)
+
+# State cut-points on the composite score. Parabolic additionally requires price
+# ABOVE its 20-EMA (a hard floor — a falling stock never reads parabolic).
+PARABOLIC_CUT = 0.66
+EXTENDED_CUT = 0.40
+
+# Minimum bars before the readout is meaningful: the score leans on the 50-EMA
+# distance, so a frame shorter than this can't define a real "50-EMA" and would
+# emit a misleading early-warmup value. Below it we fail soft to the neutral
+# default rather than score a half-built MA.
+EXT_MIN_BARS = 50
+
+
+def _ramp01(value: float, full: float, *, lo: float = 0.0) -> float:
+    """Linear ramp of ``value`` over ``[lo, full]`` clamped to ``[0, 1]``.
+
+    ``lo`` maps to ``0.0`` and ``full`` to ``1.0``; values outside the band clamp.
+    ``NaN`` in -> ``0.0`` (a missing reading contributes nothing to the score).
+    """
+    if not np.isfinite(value) or full == lo:
+        return 0.0
+    return float(min(1.0, max(0.0, (value - lo) / (full - lo))))
+
+
+@dataclass(frozen=True)
+class ExtensionState:
+    """Latest overextension / parabolic summary for one ticker.
+
+    ``state`` — ``"normal"`` / ``"extended"`` / ``"parabolic"``. ``parabolic``
+                requires both a high composite ``score`` (``>= PARABOLIC_CUT``)
+                AND price above its 20-EMA (``pct_above_ema20 > 0``); a falling
+                stock can never read parabolic.
+    ``score`` — composite ``0..1``, the mean of the six sub-scores.
+    The remaining fields are the raw readings the score is built from:
+    ``pct_above_ema20`` / ``pct_above_ema50`` (signed distance from the 20/50-EMA),
+    ``rsi`` (RSI-14), ``up_run`` (consecutive up-closes), and ``atr_pct``
+    (ATR-14 as a fraction of the last close).
+
+    Missing-data-safe default (short / empty input): ``state="normal"``,
+    ``score=0.0``, numeric fields ``NaN``, ``up_run=0``.
+    """
+
+    state: str
+    score: float
+    pct_above_ema20: float
+    pct_above_ema50: float
+    rsi: float
+    up_run: int
+    atr_pct: float
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+
+def extension_state(price_df: pd.DataFrame) -> ExtensionState:
+    """Summarise how overextended / parabolic a ticker is as an :class:`ExtensionState`.
+
+    Builds six raw readings off the close (and the OHLC frame for ATR):
+    distance above the 20- and 50-EMA (:func:`pct_from_ma`), RSI-14
+    (:func:`rsi_latest`), short-term acceleration
+    (``momentum(close, 1) - momentum(close, 3) / 3``), the
+    :func:`consecutive_up_run`, and ATR-14 as a fraction of the last close
+    (:func:`atr_latest`). Each maps to a ``[0, 1]`` sub-score via the module-top
+    ``EXT_*`` thresholds; ``score`` is their mean. ``state`` is ``"parabolic"``
+    when ``score >= PARABOLIC_CUT`` AND ``pct_above_ema20 > 0`` (hard floor),
+    ``"extended"`` when ``score >= EXTENDED_CUT``, else ``"normal"``.
+
+    Missing-data-safe: a short frame (fewer than :data:`EXT_MIN_BARS` bars), an
+    empty frame, a missing ``close`` column, or an unusable last close all return
+    the neutral default ``ExtensionState(state="normal", score=0.0,
+    <numeric fields NaN>, up_run=0)`` and never raise.
+    """
+    nan = float("nan")
+    default = ExtensionState(
+        state="normal", score=0.0,
+        pct_above_ema20=nan, pct_above_ema50=nan, rsi=nan, up_run=0, atr_pct=nan,
+    )
+    if price_df is None or "close" not in price_df.columns:
+        return default
+    close = price_df["close"]
+    if len(close) < EXT_MIN_BARS:
+        return default
+    if not np.isfinite(float(close.iloc[-1])) or float(close.iloc[-1]) == 0.0:
+        return default
+
+    last_close = float(close.iloc[-1])
+    pct20 = pct_from_ma(close, 20, "ema")
+    pct50 = pct_from_ma(close, 50, "ema")
+    rsi_val = rsi_latest(close)
+    accel = momentum(close, 1) - momentum(close, 3) / 3.0
+    run = consecutive_up_run(close)
+    atrl = atr_latest(price_df)
+    atrp = atrl / last_close if np.isfinite(atrl) else nan
+
+    sub_scores = [
+        _ramp01(pct20, EXT_PCT20_FULL),
+        _ramp01(pct50, EXT_PCT50_FULL),
+        _ramp01(rsi_val, EXT_RSI_HI, lo=EXT_RSI_LO),
+        _ramp01(accel, EXT_ACCEL_FULL),
+        _ramp01(float(run), float(EXT_RUN_FULL)),
+        _ramp01(atrp, EXT_ATRP_FULL),
+    ]
+    score = float(np.mean(sub_scores))
+
+    if score >= PARABOLIC_CUT and np.isfinite(pct20) and pct20 > 0.0:
+        state = "parabolic"
+    elif score >= EXTENDED_CUT:
+        state = "extended"
+    else:
+        state = "normal"
+
+    return ExtensionState(
+        state=state, score=score,
+        pct_above_ema20=pct20, pct_above_ema50=pct50,
+        rsi=rsi_val, up_run=run, atr_pct=atrp,
+    )
+
+
 # --- integration / demonstration -----------------------------------------
 def snapshot(price_df: pd.DataFrame) -> "dict[str, float | bool | None]":
     """Full latest scalar feature set for one ticker (every spec §6 PRICE variable).
 
     Computes momentum (1/3/6/12-mo), RSI(14), MACD line/signal/histogram, 20-bar
     relative volume, 52-week-high distance, the 20/50/150 SMAs and 5/9 EMAs,
-    price-above-SMA flags, the SMA stack flag, and the 5/9 EMA cross state/event —
-    keyed exactly as documented below. Missing-data-safe: every value degrades to
-    ``NaN``/``None`` (and ``False`` for the stack flag) on a short or empty frame;
-    this never raises.
+    price-above-SMA flags, the SMA stack flag, the 5/9 EMA cross state/event, and
+    the overextension readout (``extension_state`` string / ``extension_score``
+    float) — keyed exactly as documented below. Missing-data-safe: every value
+    degrades to ``NaN``/``None`` (and ``False`` for the stack flag, ``"normal"`` /
+    ``0.0`` for the extension readout) on a short or empty frame; this never raises.
     """
     close = price_df["close"] if "close" in price_df.columns else pd.Series(dtype="float64")
     volume = price_df["volume"] if "volume" in price_df.columns else pd.Series(dtype="float64")
 
     macd_vals = macd_latest(close)
     cross = latest_ema_cross(close, EMA_FAST, EMA_SLOW)
+    extension = extension_state(price_df)
 
     return {
         # momentum (trailing returns)
@@ -362,6 +566,9 @@ def snapshot(price_df: pd.DataFrame) -> "dict[str, float | bool | None]":
         # 5/9 EMA cross
         "ema_5_9_state": cross.state,
         "ema_5_9_event": cross.event,
+        # overextension / parabolic
+        "extension_state": extension.state,
+        "extension_score": extension.score,
     }
 
 

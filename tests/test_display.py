@@ -22,6 +22,7 @@ import math
 import os
 import sys
 from collections import OrderedDict
+from dataclasses import dataclass
 
 # Put the repo root on sys.path so "import screener" resolves when run standalone.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -96,6 +97,68 @@ def _reasons(profile: Profile, *, pcts=None, contribs=None, values=None, with_fl
     if with_flags:
         od["flags"] = {"earnings_in_window": True}
     return od
+
+
+# --- tactical-readout fixtures (S/R, overextension, buy zone) -------------
+# Lightweight stand-ins mirroring the screener.levels field contracts. The
+# display formatters duck-type via getattr, so these exercise the exact contract
+# (signed distance_pct fraction, 0..1 strength, int touches) without importing
+# any heavier module — keeping the suite framework-free. One test below also
+# builds the REAL levels.* objects to prove the formatters consume them.
+@dataclass
+class _FakeLevel:
+    price: float
+    kind: str
+    touches: int
+    strength: float
+    distance_pct: float
+
+
+@dataclass
+class _FakeLevelSet:
+    supports: tuple
+    resistances: tuple
+
+
+@dataclass
+class _FakeZone:
+    low: float
+    high: float
+    basis: str
+    in_zone: bool
+    distance_pct: float
+
+
+def _level_set():
+    """A LevelSet-like object with one resistance above and two supports below."""
+    res = (_FakeLevel(160.0, "resistance", 3, 0.82, 0.073),)
+    sup = (
+        _FakeLevel(148.0, "support", 4, 0.91, -0.0067),
+        _FakeLevel(140.0, "support", 2, 0.45, -0.0667),
+    )
+    return _FakeLevelSet(supports=sup, resistances=res)
+
+
+def _tactical_frame(symbols=("AAA", "BBB", "CCC", "DDD")):
+    """A result frame carrying the four universe-wide tactical-readout columns.
+
+    ``extension_state`` spans normal/extended/parabolic; ``in_buy_zone`` mixes
+    True/False/NaN; ``dist_to_buy_zone_pct`` is a signed fraction with a NaN.
+    """
+    n = len(symbols)
+    return pd.DataFrame(
+        {
+            "symbol": list(symbols)[:n],
+            "name": [f"{s} Inc" for s in symbols][:n],
+            "sector": ["Technology", "Energy", "Health", "Technology"][:n],
+            "score": [0.80, 0.55, 0.40, 0.30][:n],
+            "rank": list(range(1, n + 1)),
+            "extension_state": ["normal", "extended", "parabolic", "normal"][:n],
+            "extension_score": [0.10, 0.45, 0.72, 0.05][:n],
+            "in_buy_zone": [True, False, False, float("nan")][:n],
+            "dist_to_buy_zone_pct": [0.0, 0.031, -0.012, float("nan")][:n],
+        }
+    )
 
 
 # =========================================================================
@@ -195,6 +258,56 @@ def test_apply_filters_resets_index():
     assert list(out.index) == list(range(len(out)))
     # And the input frame is untouched (a copy was returned).
     assert list(df.index) == [0, 1, 2]
+
+
+def test_apply_filters_extended_hidden_drops_only_parabolic():
+    df = _tactical_frame()  # states: normal, extended, parabolic, normal
+    mom = _momentum_profile()
+    # Default (off) keeps every row, including the parabolic one.
+    keep_all = display.apply_filters(df, text="", sectors=[], min_score=0.0,
+                                     earnings_only=False, profile=mom)
+    assert len(keep_all) == 4
+    # On: only the "parabolic" row is dropped; "extended"/"normal" stay.
+    out = display.apply_filters(df, text="", sectors=[], min_score=0.0,
+                                earnings_only=False, profile=mom, extended_hidden=True)
+    assert list(out["symbol"]) == ["AAA", "BBB", "DDD"]
+    assert "parabolic" not in set(out["extension_state"])
+    # Fresh RangeIndex after the drop.
+    assert list(out.index) == list(range(len(out)))
+
+
+def test_apply_filters_in_buy_zone_only():
+    df = _tactical_frame()  # in_buy_zone: True, False, False, NaN
+    mom = _momentum_profile()
+    out = display.apply_filters(df, text="", sectors=[], min_score=0.0,
+                                earnings_only=False, profile=mom, in_buy_zone_only=True)
+    # Only the truthy in_buy_zone row survives; NaN is treated as False (dropped).
+    assert list(out["symbol"]) == ["AAA"]
+    # Off by default keeps all rows.
+    out_off = display.apply_filters(df, text="", sectors=[], min_score=0.0,
+                                    earnings_only=False, profile=mom)
+    assert len(out_off) == 4
+
+
+def test_apply_filters_tactical_flags_noop_when_columns_absent():
+    # A frame WITHOUT the tactical columns must ignore both new flags (no KeyError).
+    df = _result_frame()  # plain momentum frame, no extension/buy-zone columns
+    mom = _momentum_profile()
+    out = display.apply_filters(df, text="", sectors=[], min_score=0.0,
+                                earnings_only=False, profile=mom,
+                                extended_hidden=True, in_buy_zone_only=True)
+    assert len(out) == len(df)  # both flags are no-ops, all rows kept
+
+
+def test_apply_filters_tactical_flags_compose_with_existing():
+    # The new flags compose with sector + score filters and the index still resets.
+    df = _tactical_frame()
+    mom = _momentum_profile()
+    out = display.apply_filters(df, text="", sectors=["Technology"], min_score=0.0,
+                                earnings_only=False, profile=mom, extended_hidden=True)
+    # Technology rows are AAA (normal) and DDD (normal); both survive extended_hidden.
+    assert list(out["symbol"]) == ["AAA", "DDD"]
+    assert list(out.index) == list(range(len(out)))
 
 
 # =========================================================================
@@ -321,6 +434,22 @@ def test_column_config_spec_link_descriptors():
         assert spec[col]["help"].strip()
 
 
+def test_column_config_spec_tactical_descriptors():
+    # The universe-wide tactical columns are present for EVERY profile as plain
+    # dicts (no streamlit objects): Extension as text, In Buy Zone as a checkbox.
+    for prof in (_momentum_profile(), _long_term_profile(), _swing_profile()):
+        spec = display.column_config_spec(prof)
+        assert spec["extension_state"]["kind"] == "text"
+        assert spec["extension_state"]["label"] == "Extension"
+        assert spec["extension_state"]["help"].strip()
+        assert spec["in_buy_zone"]["kind"] == "checkbox"
+        assert spec["in_buy_zone"]["label"] == "In Buy Zone"
+        assert spec["in_buy_zone"]["help"].strip()
+        # Still plain dicts (the purity boundary holds).
+        assert isinstance(spec["extension_state"], dict)
+        assert isinstance(spec["in_buy_zone"], dict)
+
+
 # =========================================================================
 # reasons_to_frame / max_contribution / contribution_caption
 # =========================================================================
@@ -409,6 +538,32 @@ def test_help_constants_present():
     for txt in (display.SCORE_HELP, display.PERCENTILE_HELP,
                 display.CONTRIBUTION_HELP, display.WHAT_HELP, display.WHY_HELP):
         assert isinstance(txt, str) and txt.strip()
+
+
+def test_tactical_feature_descriptions_parity():
+    # Each new tactical key is BOTH labelled and described (the parity the
+    # generic test enforces — pinned explicitly here so a half-added key fails).
+    for key in ("extension_state", "extension_score", "in_buy_zone", "dist_to_buy_zone_pct"):
+        assert key in display.FEATURE_LABELS, f"{key} missing a label"
+        assert key in display.FEATURE_DESCRIPTIONS, f"{key} missing a description"
+        assert display.feature_description(key).strip()
+        assert display.feature_label(key).strip()
+
+
+def test_tactical_help_constants_present():
+    for txt in (display.LEVELS_HELP, display.EXTENSION_HELP, display.BUY_ZONE_HELP):
+        assert isinstance(txt, str) and txt.strip()
+
+
+def test_buy_zone_help_carries_not_advice_disclaimer():
+    # FRAMING GUARD for the relaxed "explicit buy zone" decision: the buy-zone
+    # help MUST disclaim advice (substring check tolerant of phrasing).
+    blob = display.BUY_ZONE_HELP.lower()
+    assert "not financial advice" in blob or "not advice" in blob
+    # The caption helper carries the same guardrail in both branches.
+    zone = _FakeZone(1.0, 2.0, "nearest support", True, 0.0)
+    assert "not financial advice" in display.buy_zone_caption(zone).lower()
+    assert "not financial advice" in display.buy_zone_caption(None).lower()
 
 
 def test_profile_descriptions_for_every_profile():
@@ -596,6 +751,136 @@ def test_format_value_scales():
     assert display.format_value("momentum_3m", float("nan")) == "—"
     assert display.format_value("forward_pe", None) == "—"
     assert display.format_value("sma_stacked_20_50_150", None) == "—"
+
+
+def test_format_value_tactical_keys():
+    # extension_score: a 0..1 fraction rendered as a 2-dec percent.
+    assert display.format_value("extension_score", 0.72) == "72.00%"
+    assert display.format_value("extension_score", 0.0) == "0.00%"
+    assert display.format_value("extension_score", float("nan")) == "—"
+    # dist_to_buy_zone_pct: a SIGNED percent (always carries +/-).
+    assert display.format_value("dist_to_buy_zone_pct", 0.031) == "+3.1%"
+    assert display.format_value("dist_to_buy_zone_pct", -0.012) == "-1.2%"
+    assert display.format_value("dist_to_buy_zone_pct", 0.0) == "+0.0%"
+    assert display.format_value("dist_to_buy_zone_pct", None) == "—"
+    # in_buy_zone: a boolean Yes/No like the other bool features.
+    assert display.format_value("in_buy_zone", True) == "Yes"
+    assert display.format_value("in_buy_zone", False) == "No"
+    assert display.format_value("in_buy_zone", float("nan")) == "—"
+    # extension_state: the categorical badge text (never a float / KeyError).
+    assert display.format_value("extension_state", "parabolic") == "🔴 Parabolic"
+    assert display.format_value("extension_state", "normal") == "🟢 Normal"
+    assert display.format_value("extension_state", None) == "—"
+
+
+# =========================================================================
+# tactical formatters: signed pct, extension badge/colour, levels frame, buy zone
+# =========================================================================
+def test_format_signed_pct():
+    assert display.format_signed_pct(0.032) == "+3.2%"
+    assert display.format_signed_pct(-0.010) == "-1.0%"
+    assert display.format_signed_pct(0.0) == "+0.0%"
+    # Missing / non-finite -> em dash, never a crash.
+    assert display.format_signed_pct(None) == "—"
+    assert display.format_signed_pct(float("nan")) == "—"
+    assert display.format_signed_pct(float("inf")) == "—"
+    # numpy float tolerated.
+    assert display.format_signed_pct(np.float64(0.05)) == "+5.0%"
+
+
+def test_extension_badge_and_color():
+    assert display.extension_badge("normal") == "🟢 Normal"
+    assert display.extension_badge("extended") == "🟠 Extended"
+    assert display.extension_badge("parabolic") == "🔴 Parabolic"
+    # Case-insensitive; unknown / None falls back to the safe Normal baseline.
+    assert display.extension_badge("PARABOLIC") == "🔴 Parabolic"
+    assert display.extension_badge("nonsense") == "🟢 Normal"
+    assert display.extension_badge(None) == "🟢 Normal"
+    # Colours pair with st.badge; unknown/None -> neutral gray.
+    assert display.extension_state_color("normal") == "gray"
+    assert display.extension_state_color("extended") == "orange"
+    assert display.extension_state_color("parabolic") == "red"
+    assert display.extension_state_color(None) == "gray"
+    assert display.extension_state_color("???") == "gray"
+
+
+def test_levels_to_frame_columns_and_order():
+    frame = display.levels_to_frame(_level_set())
+    assert list(frame.columns) == ["Level", "Kind", "Price", "Touches", "Strength", "Distance"]
+    # Resistances stack ABOVE supports; each side nearest-first as supplied.
+    assert list(frame["Level"]) == ["Resistance 1", "Support 1", "Support 2"]
+    assert list(frame["Kind"]) == ["Resistance", "Support", "Support"]
+    # Strength stays a numeric 0..1 float (a progress column consumes it).
+    assert all(0.0 <= s <= 1.0 for s in frame["Strength"])
+    assert math.isclose(float(frame.iloc[1]["Strength"]), 0.91)
+    # Touches is an int; Price a float.
+    assert int(frame.iloc[0]["Touches"]) == 3
+    assert math.isclose(float(frame.iloc[0]["Price"]), 160.0)
+    # Distance is the signed-percent STRING (above = +, below = -).
+    assert frame.iloc[0]["Distance"] == "+7.3%"
+    assert frame.iloc[1]["Distance"] == "-0.7%"
+
+
+def test_levels_to_frame_failsoft():
+    cols = ["Level", "Kind", "Price", "Touches", "Strength", "Distance"]
+    # None -> empty frame with the right columns.
+    none_f = display.levels_to_frame(None)
+    assert len(none_f) == 0 and list(none_f.columns) == cols
+    # Empty LevelSet (no supports/resistances) -> empty frame.
+    empty_f = display.levels_to_frame(_FakeLevelSet(supports=(), resistances=()))
+    assert len(empty_f) == 0 and list(empty_f.columns) == cols
+    # A non-finite strength is coerced into [0,1] (progress column stays valid).
+    bad = _FakeLevelSet(
+        supports=(_FakeLevel(100.0, "support", 2, float("nan"), float("nan")),),
+        resistances=(),
+    )
+    bf = display.levels_to_frame(bad)
+    assert len(bf) == 1
+    assert math.isfinite(float(bf.iloc[0]["Strength"])) and 0.0 <= float(bf.iloc[0]["Strength"]) <= 1.0
+    # A NaN distance renders as the em dash (not "+nan%").
+    assert bf.iloc[0]["Distance"] == "—"
+
+
+def test_format_buy_zone_and_caption():
+    zone = _FakeZone(low=145.20, high=148.50, basis="nearest support · 3 touches",
+                     in_zone=True, distance_pct=0.0)
+    assert display.format_buy_zone(zone) == "$145.20 – $148.50"
+    cap = display.buy_zone_caption(zone)
+    assert "nearest support · 3 touches" in cap
+    # Disclaimer always present (the relaxed-decision guardrail).
+    assert "not financial advice" in cap.lower()
+    # None zone -> em-dash band, and a caption that STILL carries the disclaimer.
+    assert display.format_buy_zone(None) == "—"
+    none_cap = display.buy_zone_caption(None)
+    assert "not financial advice" in none_cap.lower()
+    # Non-finite edges -> em dash (never "$nan").
+    assert display.format_buy_zone(_FakeZone(float("nan"), 10.0, "x", False, 0.0)) == "—"
+
+
+def test_tactical_formatters_consume_real_levels_objects():
+    """The formatters duck-type the genuine screener.levels dataclasses.
+
+    Proves the field contract matches the real (frozen) classes, not just the
+    stand-ins. Skips silently if levels is somehow unavailable (it is pure
+    pandas/numpy — no streamlit/yfinance — so this normally runs).
+    """
+    try:
+        from screener.levels import BuyZone, Level, LevelSet
+    except Exception:  # pragma: no cover
+        return
+    ts = pd.Timestamp("2026-01-02")
+    res = Level(price=160.0, kind="resistance", touches=3, strength=0.8,
+                distance_pct=0.07, first=ts, last=ts, timeframe="1d")
+    sup = Level(price=148.0, kind="support", touches=4, strength=0.9,
+                distance_pct=-0.01, first=ts, last=ts, timeframe="1d")
+    ls = LevelSet(supports=(sup,), resistances=(res,), last_close=150.0, timeframe="1d")
+    frame = display.levels_to_frame(ls)
+    assert list(frame["Level"]) == ["Resistance 1", "Support 1"]
+    assert frame.iloc[0]["Distance"] == "+7.0%"
+    zone = BuyZone(low=145.2, high=148.5, basis="nearest support · 4 touches",
+                   in_zone=False, distance_pct=-0.011, timeframe="1d")
+    assert display.format_buy_zone(zone) == "$145.20 – $148.50"
+    assert "not financial advice" in display.buy_zone_caption(zone).lower()
 
 
 # =========================================================================

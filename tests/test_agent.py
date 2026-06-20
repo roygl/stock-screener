@@ -24,8 +24,10 @@ a summary, and exits non-zero on any failure).
 """
 
 import dataclasses
+import importlib.util
 import os
 import sys
+import types
 
 # Put the repo root on sys.path so "import screener" resolves when run standalone.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -238,8 +240,11 @@ def test_parse_query_llm_path_monkeypatched():
     saved_available = agent.agent_available
     saved_extract = agent._llm_extract
     try:
-        agent.agent_available = lambda: True
-        agent._llm_extract = lambda query, universe_sectors, model: {
+        # agent_available now takes an optional provider arg; _llm_extract is now
+        # (query, universe_sectors, provider, model). Patch both variadically so
+        # this test stays signature-agnostic.
+        agent.agent_available = lambda *a, **k: True
+        agent._llm_extract = lambda *a, **k: {
             "profile": "long_term",
             "n_names": 12,
             "min_score": 0.9,
@@ -264,11 +269,11 @@ def test_parse_query_llm_error_falls_back():
     saved_available = agent.agent_available
     saved_extract = agent._llm_extract
 
-    def _boom(query, universe_sectors, model):
+    def _boom(*args, **kwargs):
         raise RuntimeError("boom")
 
     try:
-        agent.agent_available = lambda: True
+        agent.agent_available = lambda *a, **k: True
         agent._llm_extract = _boom
         req = agent.parse_query("top 7 momentum names", universe_sectors=SECTORS)
         # Falls back to the rule-based parser; never raises.
@@ -277,6 +282,440 @@ def test_parse_query_llm_error_falls_back():
     finally:
         agent.agent_available = saved_available
         agent._llm_extract = saved_extract
+
+
+# =========================================================================
+# provider registry — env snapshot helper
+# =========================================================================
+# Every env var the agent's resolution helpers read, so a test can save the full
+# set, mutate freely, and restore byte-for-byte in a finally (mirrors the
+# pop/restore the existing fallback test does for ANTHROPIC_API_KEY).
+_AGENT_ENV_KEYS = (
+    "SCREENER_AGENT_PROVIDER",
+    "SCREENER_AGENT_MODEL",
+    "SCREENER_OLLAMA_BASE_URL",
+    "ANTHROPIC_API_KEY",
+    "OPENAI_API_KEY",
+    "XAI_API_KEY",
+    "GEMINI_API_KEY",
+    "MISTRAL_API_KEY",
+    # the per-provider model overrides
+    "SCREENER_ANTHROPIC_MODEL",
+    "SCREENER_OPENAI_MODEL",
+    "SCREENER_XAI_MODEL",
+    "SCREENER_GEMINI_MODEL",
+    "SCREENER_MISTRAL_MODEL",
+    "SCREENER_OLLAMA_MODEL",
+)
+
+
+def _snapshot_env() -> dict:
+    """Snapshot the agent-relevant env vars (value or None if unset)."""
+    return {k: os.environ.get(k) for k in _AGENT_ENV_KEYS}
+
+
+def _restore_env(saved: dict) -> None:
+    """Restore env vars to a prior :func:`_snapshot_env` exactly (set or unset)."""
+    for k, v in saved.items():
+        if v is None:
+            os.environ.pop(k, None)
+        else:
+            os.environ[k] = v
+
+
+def _clear_agent_env() -> None:
+    """Unset every agent env var so a test starts from a known-empty slate."""
+    for k in _AGENT_ENV_KEYS:
+        os.environ.pop(k, None)
+
+
+# The 6 backend ids, pinned. This is the stability guard the plan calls for: a new
+# id must be added here deliberately (mirrors the VALID_PROFILES cross-check).
+_EXPECTED_PROVIDER_IDS = ("anthropic", "openai", "xai", "gemini", "mistral", "ollama")
+
+
+# =========================================================================
+# provider registry — shape + stability guard
+# =========================================================================
+def test_provider_registry_shape():
+    # Exactly the expected ids, and the dict key matches each Provider.id.
+    assert set(agent.PROVIDERS) == set(_EXPECTED_PROVIDER_IDS)
+    assert len(agent.PROVIDERS) == len(_EXPECTED_PROVIDER_IDS)
+    for pid, p in agent.PROVIDERS.items():
+        assert isinstance(p, agent.Provider)
+        assert p.id == pid  # dict key is the provider's own id
+        # Non-empty id/label/kind/default_model (env_key may be "" for keyless).
+        assert isinstance(p.id, str) and p.id
+        assert isinstance(p.label, str) and p.label
+        assert isinstance(p.kind, str) and p.kind
+        assert isinstance(p.default_model, str) and p.default_model
+        assert isinstance(p.model_env, str) and p.model_env
+        # kind drives the SDK/call path — only two are known.
+        assert p.kind in {"anthropic", "openai"}
+        # base_url is the SDK default (None) or a string endpoint.
+        assert p.base_url is None or isinstance(p.base_url, str)
+    # ids are unique (dict keys guarantee this, but assert the count explicitly).
+    assert len({p.id for p in agent.PROVIDERS.values()}) == len(agent.PROVIDERS)
+
+
+def test_provider_registry_ids_pinned():
+    # Stability guard: pin the exact roster so adding/removing a backend is a
+    # deliberate edit that updates this test too.
+    assert tuple(sorted(agent.PROVIDERS)) == tuple(sorted(_EXPECTED_PROVIDER_IDS))
+    # Each expected id is present individually (clear failure message if one drops).
+    for pid in _EXPECTED_PROVIDER_IDS:
+        assert pid in agent.PROVIDERS
+
+
+def test_provider_registry_kinds():
+    # anthropic is the only native path; everyone else rides the openai SDK.
+    assert agent.PROVIDERS["anthropic"].kind == "anthropic"
+    for pid in ("openai", "xai", "gemini", "mistral", "ollama"):
+        assert agent.PROVIDERS[pid].kind == "openai"
+    # Ollama is the keyless one; all others carry a key env var.
+    assert agent.PROVIDERS["ollama"].env_key == ""
+    for pid in ("anthropic", "openai", "xai", "gemini", "mistral"):
+        assert agent.PROVIDERS[pid].env_key != ""
+
+
+def test_default_provider():
+    assert agent.DEFAULT_PROVIDER == "anthropic"
+    assert agent.DEFAULT_PROVIDER in agent.PROVIDERS
+
+
+# =========================================================================
+# _resolve_provider — explicit > env > default; unknown -> default
+# =========================================================================
+def test_resolve_provider_precedence():
+    saved = _snapshot_env()
+    try:
+        _clear_agent_env()
+        # No arg, no env -> DEFAULT_PROVIDER.
+        assert agent._resolve_provider(None) is agent.PROVIDERS[agent.DEFAULT_PROVIDER]
+        # Explicit arg wins.
+        assert agent._resolve_provider("openai") is agent.PROVIDERS["openai"]
+        # Env var used when no explicit arg.
+        os.environ["SCREENER_AGENT_PROVIDER"] = "mistral"
+        assert agent._resolve_provider(None) is agent.PROVIDERS["mistral"]
+        # Explicit arg beats the env var.
+        assert agent._resolve_provider("xai") is agent.PROVIDERS["xai"]
+    finally:
+        _restore_env(saved)
+
+
+def test_resolve_provider_unknown_falls_back():
+    saved = _snapshot_env()
+    try:
+        _clear_agent_env()
+        # Unknown explicit id -> default (never raises, never KeyError).
+        assert agent._resolve_provider("does-not-exist") is agent.PROVIDERS[agent.DEFAULT_PROVIDER]
+        # Unknown env id -> default too.
+        os.environ["SCREENER_AGENT_PROVIDER"] = "garbage"
+        assert agent._resolve_provider(None) is agent.PROVIDERS[agent.DEFAULT_PROVIDER]
+        # Empty-string arg is falsy -> resolves via env/default, not a KeyError.
+        _clear_agent_env()
+        assert agent._resolve_provider("") is agent.PROVIDERS[agent.DEFAULT_PROVIDER]
+    finally:
+        _restore_env(saved)
+
+
+# =========================================================================
+# _resolve_model — explicit > per-provider env > global env > default
+# =========================================================================
+def test_resolve_model_precedence():
+    saved = _snapshot_env()
+    try:
+        _clear_agent_env()
+        p = agent.PROVIDERS["openai"]
+        # Nothing set -> the registry default.
+        assert agent._resolve_model(p, None) == p.default_model
+        # Global env beats the default.
+        os.environ["SCREENER_AGENT_MODEL"] = "global-model"
+        assert agent._resolve_model(p, None) == "global-model"
+        # Per-provider model_env beats the global env.
+        os.environ[p.model_env] = "per-provider-model"
+        assert agent._resolve_model(p, None) == "per-provider-model"
+        # An explicit model arg beats everything.
+        assert agent._resolve_model(p, "explicit-model") == "explicit-model"
+    finally:
+        _restore_env(saved)
+
+
+def test_resolve_model_per_provider_isolation():
+    # The OpenAI model_env must not leak into another provider's resolution.
+    saved = _snapshot_env()
+    try:
+        _clear_agent_env()
+        os.environ["SCREENER_OPENAI_MODEL"] = "openai-only"
+        xai = agent.PROVIDERS["xai"]
+        # xai reads SCREENER_XAI_MODEL, not the OpenAI one -> its default stands.
+        assert agent._resolve_model(xai, None) == xai.default_model
+        # And the OpenAI provider does see it.
+        assert agent._resolve_model(agent.PROVIDERS["openai"], None) == "openai-only"
+    finally:
+        _restore_env(saved)
+
+
+# =========================================================================
+# agent_available — key presence + SDK probe (monkeypatched find_spec)
+# =========================================================================
+def _patch_find_spec(present: bool):
+    """Return a fake importlib.util.find_spec: truthy module if present else None."""
+    def _fake(name, *args, **kwargs):
+        return object() if present else None
+
+    return _fake
+
+
+def test_agent_available_no_key_is_false():
+    saved = _snapshot_env()
+    saved_find = importlib.util.find_spec
+    try:
+        _clear_agent_env()
+        # Even with the SDK "present", a keyed provider with no key is unavailable.
+        importlib.util.find_spec = _patch_find_spec(True)
+        assert agent.agent_available("openai") is False
+        assert agent.agent_available("anthropic") is False
+    finally:
+        importlib.util.find_spec = saved_find
+        _restore_env(saved)
+
+
+def test_agent_available_sdk_absent_is_false():
+    saved = _snapshot_env()
+    saved_find = importlib.util.find_spec
+    try:
+        _clear_agent_env()
+        # Key present but the SDK is absent (find_spec -> None) -> unavailable.
+        os.environ["OPENAI_API_KEY"] = "sk-test"
+        os.environ["ANTHROPIC_API_KEY"] = "sk-test"
+        importlib.util.find_spec = _patch_find_spec(False)
+        assert agent.agent_available("openai") is False
+        assert agent.agent_available("anthropic") is False
+    finally:
+        importlib.util.find_spec = saved_find
+        _restore_env(saved)
+
+
+def test_agent_available_true_when_key_and_sdk():
+    saved = _snapshot_env()
+    saved_find = importlib.util.find_spec
+    try:
+        _clear_agent_env()
+        importlib.util.find_spec = _patch_find_spec(True)
+        os.environ["OPENAI_API_KEY"] = "sk-test"
+        assert agent.agent_available("openai") is True
+        os.environ["ANTHROPIC_API_KEY"] = "sk-test"
+        # No-arg call resolves to anthropic -> True with the key + SDK present.
+        assert agent.agent_available() is True
+        assert agent.agent_available("anthropic") is True
+    finally:
+        importlib.util.find_spec = saved_find
+        _restore_env(saved)
+
+
+def test_agent_available_ollama_keyless():
+    saved = _snapshot_env()
+    saved_find = importlib.util.find_spec
+    try:
+        _clear_agent_env()
+        # Ollama needs no key: available iff the openai SDK is importable, regardless
+        # of any key being set.
+        importlib.util.find_spec = _patch_find_spec(True)
+        assert agent.agent_available("ollama") is True  # no key set, still available
+        importlib.util.find_spec = _patch_find_spec(False)
+        assert agent.agent_available("ollama") is False  # SDK gone -> unavailable
+    finally:
+        importlib.util.find_spec = saved_find
+        _restore_env(saved)
+
+
+def test_agent_available_never_raises():
+    saved = _snapshot_env()
+    saved_find = importlib.util.find_spec
+    try:
+        _clear_agent_env()
+
+        # A find_spec that explodes must be swallowed -> False, not a raise.
+        def _boom(name, *args, **kwargs):
+            raise RuntimeError("boom")
+
+        importlib.util.find_spec = _boom
+        os.environ["OPENAI_API_KEY"] = "sk-test"
+        assert agent.agent_available("openai") is False
+        # An unknown provider id resolves to the default and still never raises.
+        assert agent.agent_available("totally-unknown") in (True, False)
+    finally:
+        importlib.util.find_spec = saved_find
+        _restore_env(saved)
+
+
+# =========================================================================
+# _set_screen_schema — strict-safe object schema
+# =========================================================================
+def test_set_screen_schema_sectors_enum():
+    schema = agent._set_screen_schema(list(SECTORS))
+    # The sectors enum reflects exactly the passed list.
+    assert schema["properties"]["sectors"]["items"]["enum"] == list(SECTORS)
+
+
+def test_set_screen_schema_strict_shape():
+    schema = agent._set_screen_schema(list(SECTORS))
+    assert schema["type"] == "object"
+    # Strict mode requires additionalProperties False and ALL props required.
+    assert schema["additionalProperties"] is False
+    assert set(schema["required"]) == set(schema["properties"].keys())
+    assert set(schema["required"]) == {
+        "profile", "n_names", "min_score", "sectors",
+        "text", "earnings_only", "explanation",
+    }
+
+
+def test_set_screen_schema_no_numeric_bounds():
+    schema = agent._set_screen_schema(list(SECTORS))
+    # Strict function-calling forbids numeric min/max; clamping lives in
+    # validate_request, so the numeric props must NOT carry minimum/maximum.
+    for prop in ("n_names", "min_score"):
+        assert "minimum" not in schema["properties"][prop]
+        assert "maximum" not in schema["properties"][prop]
+
+
+def test_set_screen_schema_empty_sectors():
+    # With no universe sectors, the array still validates (no empty/illegal enum).
+    schema = agent._set_screen_schema([])
+    items = schema["properties"]["sectors"]["items"]
+    assert items["type"] == "string"
+    assert "enum" not in items  # no enum rather than an empty (invalid) one
+
+
+# =========================================================================
+# _parse_openai_toolcall — JSON-string arguments off a fake response
+# =========================================================================
+def _fake_openai_response(arguments):
+    """Build a SimpleNamespace mimicking resp.choices[0].message.tool_calls[0]...."""
+    function = types.SimpleNamespace(name="set_screen", arguments=arguments)
+    tool_call = types.SimpleNamespace(function=function)
+    message = types.SimpleNamespace(tool_calls=[tool_call])
+    return types.SimpleNamespace(choices=[types.SimpleNamespace(message=message)])
+
+
+def test_parse_openai_toolcall_ok():
+    resp = _fake_openai_response(
+        '{"profile": "swing", "n_names": 7, "sectors": ["Energy"]}'
+    )
+    out = agent._parse_openai_toolcall(resp)
+    assert out == {"profile": "swing", "n_names": 7, "sectors": ["Energy"]}
+
+
+def test_parse_openai_toolcall_empty_raises():
+    # Empty tool_calls -> ValueError so parse_query falls back.
+    message = types.SimpleNamespace(tool_calls=[])
+    resp = types.SimpleNamespace(choices=[types.SimpleNamespace(message=message)])
+    raised = False
+    try:
+        agent._parse_openai_toolcall(resp)
+    except ValueError:
+        raised = True
+    assert raised
+
+
+def test_parse_openai_toolcall_missing_raises():
+    # tool_calls = None (model returned plain text) -> raises (caught upstream).
+    message = types.SimpleNamespace(tool_calls=None)
+    resp = types.SimpleNamespace(choices=[types.SimpleNamespace(message=message)])
+    raised = False
+    try:
+        agent._parse_openai_toolcall(resp)
+    except Exception:  # ValueError for None, but any raise satisfies the fallback contract
+        raised = True
+    assert raised
+
+
+# =========================================================================
+# parse_query — fallback for EVERY provider with no key/SDK present
+# =========================================================================
+def test_parse_query_fallback_all_providers():
+    saved = _snapshot_env()
+    try:
+        _clear_agent_env()  # no keys, and no SCREENER_AGENT_PROVIDER override
+        # Neither SDK is installed in the test env, so every provider degrades to
+        # the offline rule parser, deterministically and without raising.
+        for pid in _EXPECTED_PROVIDER_IDS:
+            got = agent.parse_query(
+                "top 12 swing names", universe_sectors=SECTORS, provider=pid
+            )
+            expected = agent.rule_based_parse("top 12 swing names", SECTORS)
+            assert got == expected, pid
+            assert got.profile == "swing"
+            assert got.n_names == 12
+            # The offline path is unprefixed: it must NOT claim to be LLM-backed.
+            assert not got.explanation.startswith("LLM"), pid
+            assert got.explanation.startswith("Rule-based: "), pid
+    finally:
+        _restore_env(saved)
+
+
+def test_parse_query_unknown_provider_falls_back():
+    # An unknown provider id resolves to the default and still degrades cleanly
+    # (no key/SDK) — never raises.
+    saved = _snapshot_env()
+    try:
+        _clear_agent_env()
+        got = agent.parse_query(
+            "top 6 momentum names", universe_sectors=SECTORS, provider="not-a-provider"
+        )
+        assert got.profile == "momentum"
+        assert got.n_names == 6
+        assert not got.explanation.startswith("LLM")
+    finally:
+        _restore_env(saved)
+
+
+# =========================================================================
+# parse_query — provider-aware LLM prefix (monkeypatched, no SDK/network)
+# =========================================================================
+def test_parse_query_llm_prefix_is_provider_aware():
+    # When the model returns an explanation, parse_query prefixes it with the
+    # resolved provider id: "LLM (<id>): <explanation>".
+    saved = _snapshot_env()
+    saved_available = agent.agent_available
+    saved_extract = agent._llm_extract
+    try:
+        _clear_agent_env()
+        agent.agent_available = lambda *a, **k: True
+        agent._llm_extract = lambda *a, **k: {
+            "profile": "momentum",
+            "n_names": 10,
+            "explanation": "ten momentum names",
+        }
+        req = agent.parse_query("q", universe_sectors=SECTORS, provider="openai")
+        assert req.explanation == "LLM (openai): ten momentum names"
+        # A different provider id flows through to the prefix.
+        req2 = agent.parse_query("q", universe_sectors=SECTORS, provider="xai")
+        assert req2.explanation == "LLM (xai): ten momentum names"
+    finally:
+        agent.agent_available = saved_available
+        agent._llm_extract = saved_extract
+        _restore_env(saved)
+
+
+def test_parse_query_llm_synthesized_prefix_embeds_model():
+    # When the model OMITS an explanation, parse_query synthesizes one that embeds
+    # the resolved provider id AND model: "LLM (<id>, <model>): profile=..., top ...".
+    saved = _snapshot_env()
+    saved_available = agent.agent_available
+    saved_extract = agent._llm_extract
+    try:
+        _clear_agent_env()
+        agent.agent_available = lambda *a, **k: True
+        agent._llm_extract = lambda *a, **k: {"profile": "momentum", "n_names": 10}
+        req = agent.parse_query("q", universe_sectors=SECTORS, provider="openai")
+        model = agent.PROVIDERS["openai"].default_model
+        assert req.explanation == f"LLM (openai, {model}): profile=momentum, top 10"
+    finally:
+        agent.agent_available = saved_available
+        agent._llm_extract = saved_extract
+        _restore_env(saved)
 
 
 # =========================================================================
