@@ -4,6 +4,33 @@ Newest first. Each entry: the decision, and *why*, so nothing gets re-argued lat
 
 ---
 
+2026-06-20: **Dedicated "Add a ticker" control + non-silent NL auto-add.** Branch `feat/economic-event-calendar`.
+Adding a ticker used to be possible ONLY by typing it into the natural-language box, which (a) recognised an
+UPPER-CASE token only — a lowercase `pltr` or a dotted `BRK.B` silently did nothing — and (b) reported nothing
+on success OR failure, so a user couldn't tell whether the row saved or why it didn't (`append_symbol` was
+correct; the failure was UX). Also, the visible "~N names" caption is the *scan size* (`n_names`), not the
+universe total, so even a successful add looked like "nothing changed". Decisions:
+- **A first-class `screener/ui/add_ticker.py` sidebar control** (under the universe slider): strip/upper the
+  input (lowercase + class-suffix tolerant), validate SHAPE against the writer's own
+  `screener.universe._TICKER_RE` (single source of truth — the gate can't drift from `ensure_symbol`), then
+  delegate the fetch + CSV write to `ensure_symbol` (NO duplicate persistence). It ALWAYS reports the outcome —
+  `✓ Added PLTR — universe now N names`, "already in the universe", "doesn't look like a ticker", or "Yahoo
+  returned no data" — feedback stashed in `st.session_state` so it survives the post-add `st.rerun()`.
+- **Bump `n_names` to the new size only when the slider sat at the prior max** ("scan all"), staged through the
+  existing `_pending_n_names` channel (setting the widget key directly would raise — its widget already rendered
+  above). This makes the visible count grow AND puts the freshly-appended (last-ranked) row inside the next
+  scan's head slice, so a just-added ticker is actually scannable. A non-max selection is left untouched.
+- **The NL box is no longer silent and no longer upper-case-only.** `handle_interpret` recovers a lowercase
+  bare ticker the case-sensitive parser skips (`_bare_ticker_candidate`: a single token, gated by the canonical
+  shape + the agent stopword list, so prose/multi-word queries stay unaffected), normalises `req.text` to the
+  canonical symbol when present/added so the filter + `include_symbol` surface it, and reports the result via
+  `nl_add_msg` in the transparency banner (persistent, not the one-shot sidebar slot, since the NL flow reruns
+  again for the scan). A lowercase token that fetches nothing stays QUIET (it may just be a non-ticker word — no
+  spurious error, no filter regression); only an unambiguous upper-case ticker that fails earns an error.
+- **Cross-process staleness is expected, not a bug:** `load_universe` is an in-process `@lru_cache`, so a ticker
+  added in one running session isn't visible to a second session until that one reruns an add (which calls
+  `cache_clear`) or restarts. Same-process adds always reflect immediately.
+
 2026-06-20: **In-app economic-event calendar (Milestone A).** Branch `feat/economic-event-calendar`.
 Surface upcoming high-impact US macro events (FOMC rate decisions, CPI, the monthly jobs report) plus the
 per-ticker earnings the app already fetches, with "days until" countdowns, a 3-tier impact tag, and an

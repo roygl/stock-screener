@@ -13,6 +13,7 @@ import streamlit as st
 
 from screener import agent, display
 from screener.profiles import PROFILES, get_profile
+from screener.ui import add_ticker
 
 
 # --- sidebar: controls, filters, disclaimer ------------------------------
@@ -113,6 +114,11 @@ def render_sidebar(universe) -> "tuple[bool, bool, bool]":
             st.session_state["n_names"] = universe_len
             st.caption(f"Universe has {universe_len} name(s); scanning all of them.")
         st.caption(display.universe_size_hint(n_names))
+
+        # Dedicated, explicit "add a ticker" control (accepts lowercase, always
+        # reports the outcome, and bumps a "scan all" slider to the new size) — the
+        # robust alternative to relying on the NL box to auto-detect an ALL-CAPS token.
+        add_ticker.render_add_ticker(universe)
 
         run_clicked = st.button("Run scan", type="primary", key="run_btn")
         st.caption("Sorting and filtering act on the last scan — no refetch.")
