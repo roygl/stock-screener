@@ -24,7 +24,7 @@ import streamlit as st
 # st.set_page_config MUST be the first Streamlit call (Streamlit enforces this).
 st.set_page_config(page_title="Stock Screener", page_icon="📈", layout="wide")
 
-from screener.ui import nl_state, persistence, scan, secrets_bridge, sidebar, transparency
+from screener.ui import events_panel, nl_state, persistence, scan, secrets_bridge, sidebar, transparency
 from screener.ui.results_view import render_state_switch
 from screener.universe import load_universe
 
@@ -68,6 +68,12 @@ nl_state.handle_interpret(interpret_clicked, universe_sectors)
 
 # Phase 2 / manual: the ONE engine call site; ends in st.rerun() when it fires.
 scan.run_scan_if_requested(run_clicked, clear_clicked)
+
+# Pull-based, on-open economic-event surface (no server cron on the host): the
+# next high-impact US macro releases with countdowns + impact tags, rendered every
+# run from the bundled public-domain CSV (memoized per cache_day). Sits above the
+# scan states so event risk is visible before any scan exists.
+events_panel.render_events_panel()
 
 # NL transparency banner, above the four-state switch.
 transparency.render_nl_banner()

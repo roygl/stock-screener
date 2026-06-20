@@ -54,6 +54,23 @@ Provider → env-var key (see `PROVIDERS` in `screener/agent.py`):
 `gemini`→`GEMINI_API_KEY`, `mistral`→`MISTRAL_API_KEY`. (`ollama` is keyless/local and
 not reachable from Streamlit Cloud.)
 
+## Macro-event calendar (bundled CSV, manual refresh)
+
+The "Upcoming events" panel reads `data/economic_events.csv` — a **bundled,
+public-domain** table of US macro release dates (FOMC rate decisions, CPI, the
+monthly jobs report). US government release dates are non-copyrightable facts
+(17 U.S.C. §105), so the CSV is committed to the repo and is the **runtime source
+of truth**: nothing is fetched at runtime. The panel is **pull-based** (rendered when
+a user opens the app), because Streamlit Cloud **sleeps when idle and has no cron /
+background jobs** — a server-side date "alert" cannot fire here.
+
+Refresh the CSV **manually, ~annually** (or when the next year's dates publish) by
+running `scripts/refresh_economic_calendar.py` **locally** and committing the result.
+The script is local-only: `bls.gov` blocks automated retrieval from datacenter IPs
+(Akamai 403), so a live fetch would also 403 on Streamlit Cloud — the committed CSV
+avoids that entirely. FOMC dates are marked tentative in the table (the Fed's own
+qualifier) and surfaced as such in the UI.
+
 ## Operational notes
 
 - **Idle sleep:** free apps sleep without traffic and cold-start (~30s) on the next visit.

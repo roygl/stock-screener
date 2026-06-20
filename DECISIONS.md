@@ -4,6 +4,31 @@ Newest first. Each entry: the decision, and *why*, so nothing gets re-argued lat
 
 ---
 
+2026-06-20: **In-app economic-event calendar (Milestone A).** Branch `feat/economic-event-calendar`.
+Surface upcoming high-impact US macro events (FOMC rate decisions, CPI, the monthly jobs report) plus the
+per-ticker earnings the app already fetches, with "days until" countdowns, a 3-tier impact tag, and an
+advance-warning flag — framed as *heightened expected volatility*, never advice. Decisions:
+- **Bundled, public-domain CSV is the runtime source of truth** (`data/economic_events.csv`, cols
+  `date,time_et,event,category,impact,tentative`). US government release dates are non-copyrightable facts
+  (17 U.S.C. §105) and every third-party calendar API paywalls/restricts redistribution, so the dates are
+  committed to the repo and read by the pure `screener/calendar.py` loader (`@lru_cache`, fail-soft — a
+  missing/garbage CSV yields an empty frame, never a crash). Nothing is fetched at runtime.
+- **Pull-based, not an alerting service.** Streamlit Community Cloud sleeps when idle and has no cron, so a
+  date "alert" cannot fire server-side. The calendar is rendered when the user opens the app (an "Upcoming
+  events" expander near the top of the main area), memoized per `cache_day` via `ui/caching.events_upcoming`
+  (same date-keyed warm-read model as the per-symbol TA memos). A high-impact-only toggle (default on) follows
+  the Forex Factory / Investing.com convention.
+- **Manual ~annual refresh** via `scripts/refresh_economic_calendar.py` (local-only: `bls.gov` blocks
+  datacenter IPs with an Akamai 403, so a live fetch would 403 on Cloud too — the committed CSV avoids it).
+  FOMC dates carry a `tentative` flag (the Fed's own qualifier) surfaced as a UI caption.
+- **Generalized the per-symbol event-risk badge** from swing-only to ANY profile: the engine already sets
+  signed `days_to_earnings` on every row, so the detail panel reconstructs the next earnings date (no refetch)
+  and folds it through `calendar.next_event_for_symbol`, showing a ⚠ badge inside the warning window.
+- **Educational framing reused verbatim:** the panel carries the existing `display.DISCLAIMER_TEXT`; events are
+  described as windows of heightened expected volatility, no buy/sell language (FINRA educational safe harbor).
+- **Purity boundary held:** all date/tier logic lives in pure `screener/calendar.py`; rendering lives in the
+  `screener/ui/` layer (new `ui/events_panel.py`), matching the Stage-5 split. `app.py` stays a thin entrypoint.
+
 2026-06-20: **Stage-5 refactor + universe expansion + all-stocks/Gemini defaults + browser-remembered choices + NL ticker auto-fetch.**
 Branch `feat/stage5-universe-gemini-persistence`. Six stages, each its own commit and verified between (313 → 334 tests;
 app browser-smoke + localStorage round-trip + live yfinance fetch). Decisions:

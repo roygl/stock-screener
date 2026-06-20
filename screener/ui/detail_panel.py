@@ -16,17 +16,41 @@ options. ``render_detail`` only consumes the already-resolved ``symbol``.
 
 from __future__ import annotations
 
+import datetime as dt
+
+import numpy as np
 import pandas as pd
 import streamlit as st
 import streamlit.components.v1 as components
 
-from screener import display
+from screener import calendar, display
 from screener.ui.caching import (
     buy_zone_for_symbol,
     extension_for_symbol,
     levels_for_symbol,
     patterns_for_symbol,
 )
+
+
+def _event_risk_for_row(row: pd.Series, cache_day: str) -> dict | None:
+    """Event-risk dict for the inspected row, or ``None`` — no refetch, no streamlit.
+
+    Reconstructs the next earnings date from the engine's signed ``days_to_earnings``
+    (set on EVERY row, not just swing profiles) relative to the scan's ``cache_day``,
+    then folds it through :func:`screener.calendar.next_event_for_symbol` to get the
+    same ``{event, date, days_until, impact, within_warning}`` shape used for macro
+    events. Returns ``None`` when the earnings date is missing or already past.
+    """
+    days = row.get("days_to_earnings")
+    try:
+        days = float(days)
+    except (TypeError, ValueError):
+        return None
+    if not np.isfinite(days):
+        return None
+    as_of = dt.date.fromisoformat(cache_day)
+    earnings_date = as_of + dt.timedelta(days=int(days))
+    return calendar.next_event_for_symbol(str(row["symbol"]), earnings_date, as_of)
 
 
 def render_detail(df: pd.DataFrame, symbol: str, profile, cache_day: str) -> None:
@@ -81,13 +105,14 @@ def render_detail(df: pd.DataFrame, symbol: str, profile, cache_day: str) -> Non
         icon=":material/open_in_new:", use_container_width=True,
     )
 
-    # Swing-only earnings badge for the inspected row.
-    if "earnings_in_window" in profile.flags:
-        badge = display.earnings_badge(
-            row.get("earnings_in_window"), row.get("days_to_earnings")
-        )
-        if badge:
-            st.badge(badge, color="orange")
+    # Event-risk badge for the inspected row — generalized from the old swing-only
+    # earnings badge to ANY profile. The engine sets days_to_earnings on every row
+    # (signed days vs the scan's as_of), so we reconstruct the next earnings date
+    # WITHOUT a refetch and fold it through screener.calendar.next_event_for_symbol
+    # (the same shape used for macro events). Imminent earnings show a ⚠ badge.
+    event = _event_risk_for_row(row, cache_day)
+    if event is not None and event["within_warning"]:
+        st.badge(f"⚠ {event['event']} in {event['days_until']}d", color="orange")
 
     # Plain-English headline before the numbers: where the row is strong / weak.
     summary = display.explain_rank(row, reasons, profile, total=len(df))

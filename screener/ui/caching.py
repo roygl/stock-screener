@@ -48,6 +48,24 @@ def run_cached(
 
 
 @st.cache_data(show_spinner=False)
+def events_upcoming(cache_day: str, horizon_days: int) -> pd.DataFrame:
+    """Upcoming macro events within ``horizon_days`` of today — memoized per day.
+
+    ``cache_day`` is ``date.today().isoformat()`` (same key convention as
+    :func:`run_cached` and the per-symbol memos), so the bundled-CSV read +
+    ``days_until`` recompute happen once per session-day and the panel re-uses the
+    in-hand frame on every rerun. Keyed on ``cache_day`` (not the ``date`` object)
+    because ``st.cache_data`` keys must be hashable/stable; the helper re-derives
+    ``date.today()`` inside so the memo and the displayed countdowns can't diverge.
+    All logic lives in :mod:`screener.calendar`; this is the network-free,
+    date-keyed warm read.
+    """
+    import datetime as dt                              # import INSIDE the function
+    from screener import calendar
+    return calendar.upcoming_events(dt.date.today(), horizon_days=horizon_days)
+
+
+@st.cache_data(show_spinner=False)
 def patterns_for_symbol(symbol: str, cache_day: str) -> dict:
     """Detect chart patterns for ONE inspected symbol across 1w/1d/1mo.
 

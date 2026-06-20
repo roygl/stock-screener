@@ -1,0 +1,25 @@
+date,time_et,event,category,impact,tentative
+2026-07-02,08:30,Employment Situation (jobs report),JOBS,high,false
+2026-07-14,08:30,CPI release,CPI,high,false
+2026-07-29,14:00,FOMC rate decision,FOMC,high,true
+2026-08-07,08:30,Employment Situation (jobs report),JOBS,high,false
+2026-08-12,08:30,CPI release,CPI,high,false
+2026-09-04,08:30,Employment Situation (jobs report),JOBS,high,false
+2026-09-11,08:30,CPI release,CPI,high,false
+2026-09-16,14:00,FOMC rate decision,FOMC,high,true
+2026-10-02,08:30,Employment Situation (jobs report),JOBS,high,false
+2026-10-14,08:30,CPI release,CPI,high,false
+2026-10-28,14:00,FOMC rate decision,FOMC,high,true
+2026-11-06,08:30,Employment Situation (jobs report),JOBS,high,false
+2026-11-10,08:30,CPI release,CPI,high,false
+2026-12-04,08:30,Employment Situation (jobs report),JOBS,high,false
+2026-12-09,14:00,FOMC rate decision,FOMC,high,true
+2026-12-10,08:30,CPI release,CPI,high,false
+2027-01-27,14:00,FOMC rate decision,FOMC,high,true
+2027-03-17,14:00,FOMC rate decision,FOMC,high,true
+2027-04-28,14:00,FOMC rate decision,FOMC,high,true
+2027-06-09,14:00,FOMC rate decision,FOMC,high,true
+2027-07-28,14:00,FOMC rate decision,FOMC,high,true
+2027-09-15,14:00,FOMC rate decision,FOMC,high,true
+2027-10-27,14:00,FOMC rate decision,FOMC,high,true
+2027-12-08,14:00,FOMC rate decision,FOMC,high,true
