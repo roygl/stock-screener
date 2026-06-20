@@ -29,8 +29,9 @@ import streamlit as st
 from screener import agent
 from screener.profiles import PROFILES
 
-# The sidebar widget keys we persist (all are plain scalars).
-_PERSIST_KEYS = ("profile_name", "nl_provider", "table_density", "n_names")
+# The sidebar widget keys we persist. All are plain scalars except "watchlist",
+# which is a set of starred symbols (serialized as a sorted list, see below).
+_PERSIST_KEYS = ("profile_name", "nl_provider", "table_density", "n_names", "watchlist")
 _DENSITIES = ("Compact", "Detailed")
 _APPLIED_FLAG = "_persist_applied"
 
@@ -55,6 +56,12 @@ def _coerce(key, raw, universe):
         lo = min(5, len(universe))
         hi = max(lo, len(universe))
         return max(lo, min(n, hi))
+    if key == "watchlist":
+        # Stored as a JSON list; rehydrate to the in-app set type. An empty list
+        # coerces to an empty set (not None) so a cleared watchlist is honored.
+        if not isinstance(raw, (list, tuple)):
+            return None
+        return {str(s) for s in raw}
     return None
 
 
@@ -108,6 +115,8 @@ def remember_current(ls, universe):
         current = st.session_state.get(key)
         if current is None:
             continue
+        if key == "watchlist":
+            current = sorted(current)   # set -> deterministic, JSON-serializable list
         if str(stored.get(key)) != str(current):
             try:
                 ls.setItem(key, current, key=f"_persist_set_{key}")

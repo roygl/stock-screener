@@ -4,6 +4,45 @@ Newest first. Each entry: the decision, and *why*, so nothing gets re-argued lat
 
 ---
 
+2026-06-21: **Header-led UI redesign + Sector Heatmap + extras.** Branch `feat/header-redesign-sector-heatmap`.
+Every control lived in one long sidebar; there was no top-level navigation and no sector-level view. Promoted the
+high-frequency controls into a sticky header, added a Finviz-style sector treemap, and a few quick-wins — without
+touching the engine or the cold-scan guard. Decisions:
+- **Relocate, don't rewrite.** A new `screener/ui/header.py` — `render_header(universe) -> (interpret, run, clear)`,
+  the SAME three-flag contract the sidebar returned — owns the sticky bar (📈 wordmark · view nav `segmented_control`
+  key `view` · dual-purpose search · Interpret · Run ▶ · ➕ add-ticker popover · ⚙ Settings popover) + a context row
+  (profile on every view; density / ★ watchlist / 🕘 recent on Screener). The sidebar slims to the post-scan
+  **Filters** block and returns `None`. `app.py` only swaps the flag source and adds a `view` branch in the body;
+  the apply-before-render spine is unchanged (the header renders even earlier than the sidebar did).
+- **`segmented_control` has no `captions=`** → the active profile's description renders as a caption under the bar
+  (no silent UX regression vs the old `st.radio(captions=…)`).
+- **Dual-purpose search.** ONE header box (key `nl_query`): typing mirrors into the client-side `f_text` filter
+  (instant table narrowing, 0 engine calls) via `on_change`; Interpret reads `nl_query` for the NL path. The
+  sidebar no longer creates an `f_text` widget (one owner only).
+- **Scan inputs always defined.** `view/profile_name/n_names/nl_provider/table_density/watchlist` are
+  `setdefault`-seeded at the top of `render_header` so they survive any view/popover that doesn't render their
+  widget; relocated widgets keep the init-then-no-default pattern (`key=`, no `default=`).
+- **Sticky CSS targets the WRAPPER, not the keyed container.** Streamlit wraps `st.container(key="app_header")` in
+  a shrink-to-fit `[data-testid="stLayoutWrapper"]`, so `position: sticky` must sit on that wrapper (via
+  `:has(> .st-key-app_header)`) or it has no room to stick (the inner element's parent is only as tall as itself).
+  Opaque background via a `prefers-color-scheme` pair (the repo pins no theme). The only `<style>` the repo injects,
+  mirroring the radar-iframe precedent.
+- **Sector Heatmap = pure module + thin panel** (mirrors `calendar.py` / `events_panel.py`). `screener/sector_heatmap.py`
+  (streamlit-free, 25 unit tests): `sector_summary(df)` aggregates the CACHED scan (zero new fetches) — preferring
+  the engine's universe-wide `sector_median_3m` over re-grouped rows — plus `color_for` (diverging red→grey→green,
+  clamped) and `treemap_svg` (squarified treemap, tiles sized by combined market cap, coloured by 3-month momentum).
+  `momentum_3m` is a FRACTION in the engine, so labels format with `%` (`0.236` → "+23.6%"), not a bare `.1f`. The
+  sector drill-down stages `_pending_f_sectors` + `_pending_view` back into the Screener.
+- **Extras.** Watchlist (`★` toggle in the detail panel; `★ Watchlist only` header filter; persisted through the
+  existing localStorage path as a sorted list ↔ set). Recent-scans (captured in the one scan site; the 🕘 popover
+  re-applies a past `(profile, size)` via `_pending_*` staging → the guarded scan, using TODAY's date, and clears
+  any stale NL banner). `/`-to-focus the search box.
+- **The cold-scan guard is preserved AND now locked.** Nav switches, the heatmap, watchlist/recent, and live search
+  NEVER call `run_cached` — they are view switches / client-side pandas filters on the cached df. Any control that
+  changes a widget key from the body or a late popover STAGES `_pending_*` + `st.rerun()` (you cannot set a widget
+  key after its widget rendered this run). New `tests/test_app_guard.py` (`AppTest`) asserts **0** engine calls on
+  cold load / view switch / client-side filter and **exactly 1** on Run — the first AppTest in the repo. 373 tests pass.
+
 2026-06-20: **Dedicated "Add a ticker" control + non-silent NL auto-add.** Branch `feat/economic-event-calendar`.
 Adding a ticker used to be possible ONLY by typing it into the natural-language box, which (a) recognised an
 UPPER-CASE token only — a lowercase `pltr` or a dotted `BRK.B` silently did nothing — and (b) reported nothing

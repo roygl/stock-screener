@@ -94,8 +94,13 @@ def render_detail(df: pd.DataFrame, symbol: str, profile, cache_day: str) -> Non
 
     st.metric("Fit score", f"{display.fit_score(row['score'])} / 100", help=display.SCORE_HELP)
 
-    # Jump straight out to an external chart / quote for the inspected ticker.
-    _tv_col, _yf_col = st.columns(2)
+    # Jump straight out to an external chart / quote for the inspected ticker, plus a
+    # ★ toggle that adds/removes this symbol from the watchlist (a plain set in
+    # session_state; the header's "★ Watchlist only" pill filters on it). The toggle
+    # mutates the set then reruns so the new state paints everywhere in one pass.
+    _wl = st.session_state.setdefault("watchlist", set())
+    _starred = symbol in _wl
+    _tv_col, _yf_col, _wl_col = st.columns(3)
     _tv_col.link_button(
         "TradingView", display.tradingview_url(symbol),
         icon=":material/show_chart:", use_container_width=True,
@@ -104,6 +109,14 @@ def render_detail(df: pd.DataFrame, symbol: str, profile, cache_day: str) -> Non
         "Yahoo", display.yahoo_url(symbol),
         icon=":material/open_in_new:", use_container_width=True,
     )
+    if _wl_col.button(
+        "★ Watchlisted" if _starred else "☆ Watchlist",
+        key=f"wl_toggle_{symbol}",
+        use_container_width=True,
+        help="Star this ticker so you can filter the table to your watchlist (★ Watchlist only, up top).",
+    ):
+        (_wl.discard if _starred else _wl.add)(symbol)
+        st.rerun()
 
     # Event-risk badge for the inspected row — generalized from the old swing-only
     # earnings badge to ANY profile. The engine sets days_to_earnings on every row

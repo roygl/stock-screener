@@ -34,13 +34,14 @@ def _impact_tag(impact: str) -> str:
     return _IMPACT_TAG.get(str(impact).strip().lower(), str(impact).strip().title())
 
 
-def render_events_panel() -> None:
-    """Render the on-open "Upcoming events" expander near the top of the main area.
+def render_events_panel(expanded: bool = False) -> None:
+    """Render the "Upcoming events" expander.
 
     Memoized per ``cache_day`` (the events CSV never changes within a session-day),
     with a high-impact-only toggle, a 'days until' countdown column, an impact tag,
     and a ⚠ warning flag for events inside the advance-warning window. Fail-soft: an
-    empty/absent calendar renders a single caption rather than crashing.
+    empty/absent calendar renders a single caption rather than crashing. ``expanded``
+    opens the expander by default (passed ``True`` when rendered as its own nav view).
     """
     cache_day = dt.date.today().isoformat()
     events = events_upcoming(cache_day, calendar.DEFAULT_HORIZON_DAYS)
@@ -50,7 +51,7 @@ def render_events_panel() -> None:
         if not events.empty
         else "📅 Upcoming events"
     )
-    with st.expander(label, expanded=False):
+    with st.expander(label, expanded=expanded):
         if events.empty:
             st.caption(
                 "No scheduled macro events within the next "

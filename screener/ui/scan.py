@@ -66,6 +66,13 @@ def run_scan_if_requested(run_clicked: bool, clear_clicked: bool) -> None:
             "cache_day": cache_day,
             "df": df,
         }
+        # Record this scan's signature for the header's 🕘 Recent popover: newest-first,
+        # deduped (re-running the same scan just bumps it up), capped at 5. Pure state
+        # bookkeeping in the existing call site — no new engine path, no guard change.
+        _recent = st.session_state.get("recent_scans", [])
+        _entry = (profile_name, n_names, cache_day)
+        _recent = [_entry] + [e for e in _recent if e != _entry]
+        st.session_state["recent_scans"] = _recent[:5]
         st.session_state["selected_symbol"] = None
         # The sidebar (filters) and the main area both read st.session_state["scan"],
         # but the sidebar already rendered ABOVE this handler in top-to-bottom order.

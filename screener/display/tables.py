@@ -86,6 +86,8 @@ def apply_filters(
     profile: Profile,
     extended_hidden: bool = False,
     in_buy_zone_only: bool = False,
+    in_watchlist_only: bool = False,
+    watchlist: "set[str] | None" = None,
 ) -> pd.DataFrame:
     """Apply the sidebar filters to the cached result, purely in pandas.
 
@@ -108,6 +110,9 @@ def apply_filters(
     - ``in_buy_zone_only`` — when ``True``, KEEP only rows whose ``in_buy_zone`` is
       truthy. No-op when the column is absent; a missing / ``NaN`` flag is treated as
       ``False`` (dropped), matching the engine's fail-soft baseline.
+    - ``in_watchlist_only`` — when ``True`` AND ``watchlist`` is non-empty, KEEP only
+      rows whose ``symbol`` is in ``watchlist`` (the user's starred set). No-op when
+      the flag is off, the set is empty, or the ``symbol`` column is absent.
 
     Returns a NEW frame with a fresh ``RangeIndex`` (``reset_index(drop=True)``)
     so positional row-selection from ``st.dataframe`` maps back to a stable
@@ -163,6 +168,11 @@ def apply_filters(
     if in_buy_zone_only and "in_buy_zone" in df.columns:
         in_zone = df["in_buy_zone"].apply(lambda v: (not _is_missing(v)) and bool(v))
         mask &= in_zone
+
+    # Keep only starred rows (the user's watchlist). No-op when the flag is off or
+    # the set is empty, so an empty watchlist never blanks the whole table.
+    if in_watchlist_only and watchlist and "symbol" in df.columns:
+        mask &= df["symbol"].isin(watchlist)
 
     return df[mask].reset_index(drop=True)
 
