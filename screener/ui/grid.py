@@ -57,6 +57,30 @@ _JS_FIT_STYLE = JsCode(
     " borderRadius:'3px'};"
     " }"
 )
+# Ticker cell: append a small "ⓘ" affordance when the row carries a company name,
+# and surface that name as the cell's hover tooltip — so the Name column can be
+# hidden from the grid while the name stays one hover away. The underlying cell
+# VALUE is untouched (selection still reads the bare symbol); only the rendered
+# text and the tooltip change.
+_JS_SYMBOL_INFO = JsCode(
+    "function(p){ if(p.value==null) return ''; "
+    "var n = p.data ? p.data.name : null; "
+    "return (n!=null && String(n).trim()!=='') ? p.value + ' ⓘ' : p.value; }"
+)
+_JS_SYMBOL_TOOLTIP = JsCode(
+    "function(p){ var n = p.data ? p.data.name : null; "
+    "return (n!=null && String(n).trim()!=='') ? String(n) : (p.value || ''); }"
+)
+# Market-cap cell (the All-Tickers profile's ranking signal): a compact $T/$B/$M
+# money string instead of a 13-digit raw number.
+_JS_MARKETCAP = JsCode(
+    "function(p){ if(p.value==null||isNaN(p.value)) return '—'; "
+    "var v=Number(p.value), a=Math.abs(v); "
+    "if(a>=1e12) return '$'+(v/1e12).toFixed(2)+'T'; "
+    "if(a>=1e9) return '$'+(v/1e9).toFixed(2)+'B'; "
+    "if(a>=1e6) return '$'+(v/1e6).toFixed(2)+'M'; "
+    "return '$'+v.toFixed(0); }"
+)
 
 
 def _js_number(decimals: int, suffix: str = "") -> JsCode:
@@ -73,7 +97,26 @@ def _configure_aggrid_column(gb, col: str, desc: dict) -> None:
     tip = desc.get("help") or ""
     kind = desc.get("kind")
     fmt = desc.get("format")
-    if col == "fit":
+    if col == "rank":
+        # Rank is the FIRST column: pin it left so it stays leftmost (ahead of the
+        # also-pinned symbol) and visible while the wider Detailed view scrolls.
+        gb.configure_column(col, header_name=label, headerTooltip=tip,
+                            valueFormatter=_js_number(0), type=["numericColumn"],
+                            width=72, pinned="left")
+    elif col == "symbol":
+        # The ticker carries the company name as an "ⓘ" hover tooltip (the Name
+        # column itself is hidden below); pinned left, right after rank.
+        gb.configure_column(col, header_name=label, headerTooltip=tip, width=104,
+                            pinned="left", valueFormatter=_JS_SYMBOL_INFO,
+                            tooltipValueGetter=_JS_SYMBOL_TOOLTIP)
+    elif col == "name":
+        # Kept in the row data (so the symbol tooltip can read it, and the CSV still
+        # carries it) but HIDDEN from the grid — the ticker's ⓘ surfaces it instead.
+        gb.configure_column(col, header_name=label, hide=True)
+    elif col == "market_cap":
+        gb.configure_column(col, header_name=label, headerTooltip=tip,
+                            valueFormatter=_JS_MARKETCAP, type=["numericColumn"], width=110)
+    elif col == "fit":
         gb.configure_column(col, header_name=label, headerTooltip=tip,
                             valueFormatter=_js_number(0), cellStyle=_JS_FIT_STYLE,
                             type=["numericColumn"], width=86)
@@ -95,20 +138,17 @@ def _configure_aggrid_column(gb, col: str, desc: dict) -> None:
         suffix = "×" if col == "rel_volume_20" else ""
         gb.configure_column(col, header_name=label, headerTooltip=tip,
                             valueFormatter=_js_number(decimals, suffix),
-                            type=["numericColumn"], width=(72 if col == "rank" else 110))
+                            type=["numericColumn"], width=110)
     elif kind == "progress":  # a derived [0,1] score (fit is handled above)
         gb.configure_column(col, header_name=label, headerTooltip=tip,
                             valueFormatter=_js_number(2), type=["numericColumn"], width=110)
     elif kind == "checkbox":
         gb.configure_column(col, header_name=label, headerTooltip=tip,
                             valueFormatter=_JS_YESNO, width=100)
-    else:  # text (symbol / name / sector / extension badge)
-        widths = {"symbol": 88, "name": 150, "sector": 130}
-        # Pin the symbol column so it stays visible while scrolling the wider
-        # Detailed view (finance-site convention).
-        pinned = "left" if col == "symbol" else None
+    else:  # text (sector / extension badge — rank/symbol/name handled above)
+        widths = {"sector": 130}
         gb.configure_column(col, header_name=label, headerTooltip=tip,
-                            width=widths.get(col, 120), pinned=pinned)
+                            width=widths.get(col, 120))
 
 
 def render_results_grid(table_df: pd.DataFrame, profile) -> "str | None":
@@ -127,6 +167,10 @@ def render_results_grid(table_df: pd.DataFrame, profile) -> "str | None":
         suppressRowClickSelection=True,         # a single click does NOT select
         onRowDoubleClicked=_JS_DBLCLICK_SELECT,  # ...a double click does
         rowHeight=30,
+        # Use native browser title-attribute tooltips so the ticker's ⓘ reliably
+        # surfaces the company name (and the Why cell its full text) on hover,
+        # without depending on AgGrid's custom tooltip component/styling.
+        enableBrowserTooltips=True,
     )
     spec = display.column_config_spec(profile)
     for col in table_df.columns:

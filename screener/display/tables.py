@@ -84,6 +84,7 @@ def apply_filters(
     min_score: float,
     earnings_only: bool,
     profile: Profile,
+    ticker: str = "",
     extended_hidden: bool = False,
     in_buy_zone_only: bool = False,
     in_watchlist_only: bool = False,
@@ -95,6 +96,9 @@ def apply_filters(
 
     - ``text`` — case-insensitive substring over ``symbol`` + ``name`` (empty
       string keeps everything; a ``NaN`` name simply never matches).
+    - ``ticker`` — case-insensitive substring over ``symbol`` ONLY (the dedicated
+      "filter by ticker" box; empty string keeps everything). Narrower than
+      ``text`` (never matches the company name), and ANDs with it.
     - ``sectors`` — membership in the chosen sectors (empty list keeps all).
     - ``min_score`` — keep ``score >= min_score``; a ``NaN`` score is kept ONLY
       when the floor is ``0.0`` (so the default never hides fail-soft rows but a
@@ -129,6 +133,12 @@ def apply_filters(
         sym = df["symbol"].astype(str).str.lower() if "symbol" in df.columns else pd.Series("", index=df.index)
         name = df["name"].fillna("").astype(str).str.lower() if "name" in df.columns else pd.Series("", index=df.index)
         mask &= sym.str.contains(needle, regex=False) | name.str.contains(needle, regex=False)
+
+    # Ticker: case-insensitive substring over symbol ONLY (the dedicated ticker box).
+    tick = (ticker or "").strip().lower()
+    if tick:
+        sym = df["symbol"].astype(str).str.lower() if "symbol" in df.columns else pd.Series("", index=df.index)
+        mask &= sym.str.contains(tick, regex=False)
 
     # Sector membership (empty selection = all).
     if sectors:

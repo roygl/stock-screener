@@ -43,11 +43,12 @@ from dataclasses import dataclass, replace
 from typing import Iterable, Optional
 
 # --- module constants: one source of truth shared by both parse paths ----
-# These three profile names are the literal set the screener supports. They are
+# These profile names are the literal set the screener supports. They are
 # hardcoded here (rather than importing screener.profiles.PROFILES) so this
 # module stays import-cheap and free of heavy deps. They MUST stay in sync with
-# screener.profiles.PROFILES — tests/test_agent.py cross-checks them.
-VALID_PROFILES: "tuple[str, ...]" = ("long_term", "swing", "momentum")
+# screener.profiles.PROFILES — tests/test_agent.py cross-checks them. ("all" is the
+# unfiltered browse-everything lens.)
+VALID_PROFILES: "tuple[str, ...]" = ("long_term", "swing", "momentum", "all")
 DEFAULT_PROFILE = "momentum"
 
 N_NAMES_MIN = 5
@@ -156,7 +157,8 @@ SYSTEM_PROMPT = (
     "mechanical signals; it never gives financial advice. Map the request to the "
     "set_screen tool: pick the closest profile (long_term = value/cheap/"
     "buy-and-hold; swing = breakout/short-term/pullback; momentum = growth/"
-    "trending leaders); set n_names if a count is requested; set sectors only to "
+    "trending leaders; all = no filters, show every name); set n_names if a count "
+    "is requested; set sectors only to "
     "sectors the user names; set min_score in [0,1] if they ask for a quality/"
     "conviction floor (treat a percentage like 80 as 0.80); set earnings_only "
     "only for swing requests that mention earnings; set text to a single ticker "
@@ -181,7 +183,7 @@ class ScreenRequest:
     0.0 and ``earnings_only`` False (the filter-widget defaults).
     """
 
-    profile: str = "momentum"            # one of "long_term" | "swing" | "momentum"
+    profile: str = "momentum"            # one of VALID_PROFILES (long_term/swing/momentum/all)
     n_names: int = 25                    # clamped 5..503 by validate_request
     min_score: float = 0.0               # clamped [0.0, 1.0]
     sectors: "tuple[str, ...]" = ()      # subset of universe sectors; tuple => hashable/frozen
@@ -649,7 +651,7 @@ def _set_screen_schema(sector_list: "list[str]") -> dict:
         "type": "object",
         "additionalProperties": False,
         "properties": {
-            "profile": {"type": "string", "enum": ["long_term", "swing", "momentum"]},
+            "profile": {"type": "string", "enum": list(VALID_PROFILES)},
             "n_names": {"type": "integer"},  # NO min/max — strict forbids; clamp in validate_request
             "min_score": {"type": "number"},  # NO min/max
             "sectors": (

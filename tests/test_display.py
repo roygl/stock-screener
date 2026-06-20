@@ -226,6 +226,35 @@ def test_apply_filters_text_substring_case_insensitive():
     assert list(out_nv["symbol"]) == ["NVDA"]
 
 
+def test_apply_filters_ticker_symbol_only():
+    # The dedicated ticker box matches the SYMBOL only — never the company name.
+    df = pd.DataFrame(
+        {
+            "symbol": ["AAPL", "MSFT", "NVDA"],
+            "name": ["Apple Inc", "Microsoft", "NVIDIA"],
+            "score": [0.8, 0.5, 0.3],
+        }
+    )
+    p = _momentum_profile()
+    # Case-insensitive substring on the symbol.
+    out = display.apply_filters(df, text="", ticker="aap", sectors=[], min_score=0.0,
+                                earnings_only=False, profile=p)
+    assert list(out["symbol"]) == ["AAPL"]
+    # "apple" would match the NAME via `text`, but NOT via `ticker` (symbol-only).
+    out_name = display.apply_filters(df, text="", ticker="apple", sectors=[], min_score=0.0,
+                                     earnings_only=False, profile=p)
+    assert len(out_name) == 0
+    # Empty ticker keeps everything.
+    out_all = display.apply_filters(df, text="", ticker="", sectors=[], min_score=0.0,
+                                    earnings_only=False, profile=p)
+    assert len(out_all) == 3
+    # ticker AND text compose (both must hold); index resets after the drop.
+    out_both = display.apply_filters(df, text="nvidia", ticker="nv", sectors=[], min_score=0.0,
+                                     earnings_only=False, profile=p)
+    assert list(out_both["symbol"]) == ["NVDA"]
+    assert list(out_both.index) == list(range(len(out_both)))
+
+
 def test_apply_filters_sector_and_min_score():
     df = pd.DataFrame(
         {
@@ -451,6 +480,22 @@ def test_column_order_compact_vs_detailed_density():
     assert detailed.index("momentum_3m") < detailed.index("extension_state")
     assert "extension_state" in detailed and "in_buy_zone" in detailed
     assert compact[-1] == "why" and detailed[-1] == "why"
+
+
+def test_all_profile_surfaces_market_cap_in_detailed():
+    # The unfiltered "all" lens ranks by market cap; like any signal it shows only
+    # in the Detailed density, and the config spec types/labels it.
+    all_p = get_profile("all")
+    df = _result_frame()
+    df["market_cap"] = [3.0e12, 1.0e12, 5.0e11]
+    compact = display.column_order(all_p, df)
+    detailed = display.column_order(all_p, df, density="detailed")
+    assert "market_cap" not in compact
+    assert "market_cap" in detailed
+    assert "market_cap" in display.table_view(df, all_p, density="detailed").columns
+    spec = display.column_config_spec(all_p)
+    assert spec["market_cap"]["label"] == "Market Cap"
+    assert spec["market_cap"]["kind"] == "number"
 
 
 def test_table_view_carries_link_columns():

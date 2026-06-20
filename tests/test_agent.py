@@ -819,7 +819,7 @@ def test_parse_query_llm_synthesized_prefix_embeds_model():
 # cross-checks + dataclass shape
 # =========================================================================
 def test_valid_profiles_in_sync():
-    assert set(agent.VALID_PROFILES) == {"long_term", "swing", "momentum"}
+    assert set(agent.VALID_PROFILES) == {"long_term", "swing", "momentum", "all"}
     # Optional, import-guarded cross-check against the real registry.
     try:
         from screener.profiles import PROFILES

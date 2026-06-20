@@ -141,11 +141,15 @@ def _hand_frame(data, index):
 # =========================================================================
 # profiles.py — declarative configs + registry
 # =========================================================================
-def test_registry_has_three_profiles():
-    assert set(prof.PROFILES) == {"long_term", "swing", "momentum"}
+def test_registry_has_expected_profiles():
+    assert set(prof.PROFILES) == {"long_term", "swing", "momentum", "all"}
     for name, p in prof.PROFILES.items():
         assert isinstance(p, Profile)
         assert p.name == name
+    # long_term stays first so it remains the default (next(iter(PROFILES))).
+    assert next(iter(prof.PROFILES)) == "long_term"
+    # The "all" lens is unfiltered (every scanned name appears).
+    assert prof.PROFILES["all"].filters == ()
 
 
 def test_get_profile_case_insensitive_and_unknown_raises():
@@ -654,6 +658,36 @@ def test_run_screen_swing_end_to_end():
     aaa = result[result["symbol"] == "AAA"]
     if not aaa.empty:
         assert bool(aaa.iloc[0]["earnings_in_window"]) is True
+
+
+def test_run_screen_all_profile_unfiltered_ranked_by_market_cap():
+    # "all" has NO hard filters: every scanned name appears — even the falling ones
+    # momentum/long_term would drop — and the single market_cap signal orders the
+    # full list largest-first.
+    rows = [
+        ("AAA", "Alpha", "Tech"),
+        ("BBB", "Bravo", "Tech"),
+        ("CCC", "Char", "Energy"),
+        ("DDD", "Delta", "Utilities"),
+    ]
+    frames = {
+        "AAA": _make_frame(start=40, drift=0.30, seed=1),                # rising
+        "BBB": _make_frame(start=60, drift=0.30, seed=2),                # rising
+        "CCC": _make_frame(start=50, drift=0.20, falling=True, seed=3),  # falling
+        "DDD": _make_frame(start=50, drift=0.20, falling=True, seed=4),  # falling
+    }
+    caps = {"AAA": 3e12, "BBB": 1e12, "CCC": 2e12, "DDD": 5e11}
+    funds = {
+        sym: Fundamentals(symbol=sym, name=name, sector=sector, market_cap=caps[sym])
+        for (sym, name, sector) in rows
+    }
+    result = eng.run_screen("all", _universe(rows),
+                            FakeProvider(frames=frames, fundamentals=funds), as_of=AS_OF)
+    _assert_well_formed_result(result, "all")
+    # No filter: all four survive, including the two falling names.
+    assert set(result["symbol"]) == {"AAA", "BBB", "CCC", "DDD"}
+    # Ranked by market cap, largest first: AAA(3T) > CCC(2T) > BBB(1T) > DDD(0.5T).
+    assert list(result["symbol"]) == ["AAA", "CCC", "BBB", "DDD"]
 
 
 def test_run_screen_accepts_profile_object():

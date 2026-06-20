@@ -107,6 +107,10 @@ PROFILE_DESCRIPTIONS: "dict[str, str]" = {
         "sector, with an earnings-date heads-up."
     ),
     "momentum": "Strongest trailing returns and trend, confirmed by volume.",
+    "all": (
+        "Every scanned name with no hard filters — ranked by market cap, largest "
+        "first. A plain browse of the whole universe."
+    ),
 }
 
 

@@ -4,6 +4,30 @@ Newest first. Each entry: the decision, and *why*, so nothing gets re-argued lat
 
 ---
 
+2026-06-21: **Ticker filter + "All Tickers" profile + ticker-centric results table.** Branch
+`feat/header-redesign-sector-heatmap`. A small follow-on to the redesign, all over the cached scan (no engine call
+and no cold-scan-guard change). Decisions:
+- **Filter by ticker.** `display.apply_filters` gains a `ticker=` kwarg — a case-insensitive substring over `symbol`
+  ONLY (deliberately narrower than the header search's symbol-OR-name `text`), ANDed with every other filter. A
+  dedicated **Ticker** box leads the sidebar Filters block (key `f_ticker`), read by `results_view`. Client-side, 0
+  engine calls. Kept separate from the header search (one owner each; the header box still does symbol-or-name).
+- **"All Tickers" profile.** A new `Profile(name="all", filters=())` — NO hard cutoffs, so every scanned name appears
+  (the requested unfiltered view). With no style to "fit", a single `market_cap` signal orders the full list
+  largest-first so Fit/Score stay meaningful instead of a flat 0 for every row. Inserted AFTER swing in `PROFILES`
+  so `next(iter(PROFILES))` stays `long_term` (the default never moved). Synced into `agent.VALID_PROFILES`, the
+  `set_screen` tool enum (now `list(VALID_PROFILES)` — single source), the system prompt, and a profile blurb.
+  `market_cap` gets a $T/$B/$M grid formatter; only the Detailed density surfaces the column.
+- **Ticker-centric table.** Rank is now the TRUE first column — pinned left, ahead of the also-pinned symbol (it was
+  already first in `column_order`, but the pinned symbol rendered leftmost). The company **Name column is removed
+  from the grid** but KEPT in the row data, and surfaced as an "ⓘ" affordance + hover tooltip on the ticker cell
+  (`enableBrowserTooltips=True`; a `tooltipValueGetter` reads `name`; the formatter only appends ⓘ when a name
+  exists). Deliberately confined to the grid layer: the pure `column_order` / `table_view` / CSV-export contract is
+  UNCHANGED (name still flows through, hidden only at render), so the export keeps the name and the display tests
+  hold. +3 tests (ticker filter; all-profile end-to-end ranked by cap incl. falling names; all-profile market_cap
+  column); 376 pass.
+
+---
+
 2026-06-21: **Header-led UI redesign + Sector Heatmap + extras.** Branch `feat/header-redesign-sector-heatmap`.
 Every control lived in one long sidebar; there was no top-level navigation and no sector-level view. Promoted the
 high-frequency controls into a sticky header, added a Finviz-style sector treemap, and a few quick-wins — without
