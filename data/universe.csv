@@ -510,7 +510,6 @@ CLS,Celestica Inc.,Information Technology
 AAOI,"Applied Optoelectronics, Inc.",Information Technology
 POET,POET Technologies Inc.,Information Technology
 NNDM,Nano Dimension Ltd.,Information Technology
-PSTG,"Pure Storage, Inc.",Information Technology
 TSM,Taiwan Semiconductor Manufacturing Company Limited,Information Technology
 ARM,Arm Holdings plc,Information Technology
 MRVL,"Marvell Technology, Inc.",Information Technology
@@ -535,8 +534,6 @@ BMNR,"Bitmine Immersion Technologies, Inc.",Financials
 SBET,"Sharplink, Inc.",Financials
 DFDV,DeFi Development Corp.,Financials
 UPXI,"Upexi, Inc.",Communication Services
-FORD,"Forward Industries, Inc.",Information Technology
-SMLR,"Semler Scientific, Inc.",Health Care
 BTBT,"Bit Digital, Inc.",Financials
 MARA,"MARA Holdings, Inc.",Financials
 RIOT,"Riot Platforms, Inc.",Financials
@@ -547,7 +544,6 @@ CIFR,Cipher Digital Inc.,Information Technology
 WULF,TeraWulf Inc.,Financials
 BTDR,Bitdeer Technologies Group,Information Technology
 HUT,Hut 8 Corp.,Financials
-BITF,Bitfarms Ltd.,Information Technology
 CAN,Canaan Inc.,Information Technology
 CRCL,Circle Internet Group,Financials
 GLXY,Galaxy Digital,Financials
@@ -592,7 +588,6 @@ NET,"Cloudflare, Inc.",Information Technology
 IOT,Samsara Inc.,Information Technology
 MDB,"MongoDB, Inc.",Information Technology
 ZS,"Zscaler, Inc.",Information Technology
-CFLT,"Confluent, Inc.",Information Technology
 PATH,"UiPath, Inc.",Information Technology
 S,"SentinelOne, Inc.",Information Technology
 AI,"C3.ai, Inc.",Information Technology
@@ -615,5 +610,4 @@ HIMS,"Hims & Hers Health, Inc.",Health Care
 BBAI,"BigBear.ai Holdings, Inc.",Information Technology
 SOUN,"SoundHound AI, Inc.",Information Technology
 OPEN,Opendoor Technologies Inc.,Real Estate
-LTRY,Lottery.com Inc.,Consumer Discretionary
 CHWY,"Chewy, Inc.",Consumer Discretionary
