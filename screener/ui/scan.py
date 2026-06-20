@@ -37,9 +37,10 @@ def run_scan_if_requested(run_clicked: bool, clear_clicked: bool) -> None:
             st.cache_data.clear()
         if run_clicked or clear_clicked:
             # A manual Run scan / clear-rescan supersedes any prior NL interpretation —
-            # drop the stale banner so it can't describe a scan the user didn't ask for
-            # in natural language.
+            # drop the stale banner (and its add-result) so neither can describe a scan
+            # the user didn't ask for in natural language.
             st.session_state.pop("nl_last_req", None)
+            st.session_state.pop("nl_add_msg", None)
         # Read from the widget keys, already reconciled with any staged NL values.
         profile_name = st.session_state["profile_name"]
         n_names = st.session_state["n_names"]

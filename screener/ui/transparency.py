@@ -15,6 +15,13 @@ import streamlit as st
 # drove the current scan (the explanation + the resolved knobs).
 def render_nl_banner() -> None:
     """Render the interpreted-request banner if an NL request drove this scan."""
+    # The add-result of the last Interpret (success/error from the auto-add), so the
+    # natural-language path is never silent. Persists alongside ``nl_last_req`` until
+    # the next Interpret (which clears it) or a manual scan (scan.py pops both).
+    add_msg = st.session_state.get("nl_add_msg")
+    if add_msg is not None:
+        kind, text = add_msg
+        {"success": st.success, "error": st.error}.get(kind, st.info)(text)
     last = st.session_state.get("nl_last_req")
     if last is not None:
         st.info(f"Interpreted your request — {last.explanation}")
