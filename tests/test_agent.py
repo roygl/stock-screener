@@ -387,7 +387,7 @@ def test_provider_registry_kinds():
 
 
 def test_default_provider():
-    assert agent.DEFAULT_PROVIDER == "anthropic"
+    assert agent.DEFAULT_PROVIDER == "gemini"
     assert agent.DEFAULT_PROVIDER in agent.PROVIDERS
 
 
@@ -514,7 +514,8 @@ def test_agent_available_true_when_key_and_sdk():
         os.environ["OPENAI_API_KEY"] = "sk-test"
         assert agent.agent_available("openai") is True
         os.environ["ANTHROPIC_API_KEY"] = "sk-test"
-        # No-arg call resolves to anthropic -> True with the key + SDK present.
+        os.environ["GEMINI_API_KEY"] = "sk-test"
+        # No-arg call resolves to gemini (the default) -> True with the key + SDK present.
         assert agent.agent_available() is True
         assert agent.agent_available("anthropic") is True
     finally:
