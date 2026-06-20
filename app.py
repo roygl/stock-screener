@@ -22,6 +22,8 @@ import datetime as dt
 
 import pandas as pd
 import streamlit as st
+import streamlit.components.v1 as components
+from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode, JsCode
 
 from screener import agent, display
 from screener.cache import Cache
@@ -167,42 +169,118 @@ if "n_names" in st.session_state:
     st.session_state["n_names"] = max(_smin, min(int(st.session_state["n_names"]), _smax))
 
 
-# --- builder: pure column-config descriptor -> real st.column_config ------
-def _build_column_config(profile) -> dict:
-    """Turn :func:`display.column_config_spec` (a pure dict) into st.column_config.
+# --- results grid (st-aggrid): DOUBLE-CLICK a row to inspect it ----------
+# The main results table is an AgGrid because the native st.dataframe only
+# supports single-click row selection. `suppressRowClickSelection` + an
+# `onRowDoubleClicked` handler make DOUBLE-CLICK the selection gesture; the grid
+# reruns on SELECTION_CHANGED (NOT on sort/filter, so the cold-scan guard holds)
+# and we read the chosen symbol back out. The pure column descriptors
+# (display.column_config_spec) are realised here as AgGrid colDefs — the same
+# purity boundary the old _build_column_config used for st.dataframe.
+_JS_DBLCLICK_SELECT = JsCode("function(e){ e.node.setSelected(true); }")
+# This AG Grid React build accepts NEITHER an HTML-string cellRenderer (escaped to
+# raw text) NOR a DOM-node one (React error #31). So we render ONLY via
+# valueFormatters (plain text) + cellStyle (a plain style object) — never a
+# cellRenderer. The Fit "bar" is a cellStyle background gradient behind the number.
+_JS_YESNO = JsCode(
+    "function(p){ return p.value === true ? 'Yes' : (p.value === false ? 'No' : '—'); }"
+)
+_JS_PERCENT = JsCode(
+    "function(p){ return (p.value==null||isNaN(p.value)) ? '—' : "
+    "(p.value*100).toFixed(1) + '%'; }"
+)
+_JS_FIT_STYLE = JsCode(
+    "function(p){"
+    " if(p.value==null||isNaN(p.value)) return {};"
+    " var v=Math.max(0,Math.min(100,p.value));"
+    " return {background:'linear-gradient(90deg,#bcd3f7 '+v+'%, rgba(0,0,0,0) '+v+'%)',"
+    " borderRadius:'3px'};"
+    " }"
+)
 
-    This is the single purity boundary: ``st.column_config.*`` objects can only
-    be built where streamlit is imported, so the descriptor is produced purely in
-    ``display`` and realised here.
+
+def _js_number(decimals: int, suffix: str = "") -> JsCode:
+    """A numeric valueFormatter: fixed decimals + optional suffix, '—' for NaN."""
+    return JsCode(
+        "function(p){ return (p.value==null||isNaN(p.value)) ? '—' : "
+        f"Number(p.value).toFixed({decimals}) + '{suffix}'; }}"
+    )
+
+
+def _configure_aggrid_column(gb, col: str, desc: dict) -> None:
+    """Realise one pure column descriptor as an AgGrid column on ``gb``."""
+    label = desc.get("label", col)
+    tip = desc.get("help") or ""
+    kind = desc.get("kind")
+    fmt = desc.get("format")
+    if col == "fit":
+        gb.configure_column(col, header_name=label, headerTooltip=tip,
+                            valueFormatter=_js_number(0), cellStyle=_JS_FIT_STYLE,
+                            type=["numericColumn"], width=86)
+    elif col == "why":
+        gb.configure_column(col, header_name=label, headerTooltip=tip, minWidth=260,
+                            flex=1, sortable=False, tooltipField=col)
+    elif kind == "percent":
+        gb.configure_column(col, header_name=label, headerTooltip=tip,
+                            valueFormatter=_JS_PERCENT, type=["numericColumn"], width=110)
+    elif kind == "number":
+        decimals = {"%.0f": 0, "%.1f": 1, "%.2f": 2, "%.3f": 3, "%d": 0}.get(fmt, 2)
+        suffix = "×" if col == "rel_volume_20" else ""
+        gb.configure_column(col, header_name=label, headerTooltip=tip,
+                            valueFormatter=_js_number(decimals, suffix),
+                            type=["numericColumn"], width=(72 if col == "rank" else 110))
+    elif kind == "progress":  # a derived [0,1] score (fit is handled above)
+        gb.configure_column(col, header_name=label, headerTooltip=tip,
+                            valueFormatter=_js_number(2), type=["numericColumn"], width=110)
+    elif kind == "checkbox":
+        gb.configure_column(col, header_name=label, headerTooltip=tip,
+                            valueFormatter=_JS_YESNO, width=100)
+    else:  # text (symbol / name / sector / extension badge)
+        widths = {"symbol": 88, "name": 150, "sector": 130}
+        gb.configure_column(col, header_name=label, headerTooltip=tip,
+                            width=widths.get(col, 120))
+
+
+def _render_results_grid(table_df: pd.DataFrame, profile) -> "str | None":
+    """Render the results table as a double-click-selectable AgGrid.
+
+    Returns the symbol of the double-clicked row (or ``None``). ``table_df``
+    already carries the synthetic ``fit`` / link / ``why`` columns (+ the TA badge
+    columns app.py appends) in display order; we only attach formatting + the
+    double-click selection gesture.
     """
-    cfg: dict = {}
-    for col, desc in display.column_config_spec(profile).items():
-        kind = desc.get("kind")
-        label = desc.get("label", col)
-        help_text = desc.get("help")  # header "?" tooltip (None -> no tooltip)
-        if kind == "progress":
-            cfg[col] = st.column_config.ProgressColumn(
-                label, help=help_text, format=desc.get("format"),
-                min_value=desc.get("min", 0.0), max_value=desc.get("max", 1.0),
-            )
-        elif kind == "percent":
-            # Percent-style features are FRACTIONS in the engine (0.12 == 12%).
-            # The "percent" format preset (NOT a printf "%%" pattern) multiplies
-            # by 100 for display, so 0.12 renders as "12.00%".
-            cfg[col] = st.column_config.NumberColumn(label, help=help_text, format=desc.get("format", "percent"))
-        elif kind == "number":
-            cfg[col] = st.column_config.NumberColumn(label, help=help_text, format=desc.get("format"))
-        elif kind == "checkbox":
-            cfg[col] = st.column_config.CheckboxColumn(label, help=help_text)
-        elif kind == "link":
-            # Per-ticker external link: `display_text` is the in-cell glyph; the
-            # column holds a real URL per row (built in display.table_view).
-            cfg[col] = st.column_config.LinkColumn(
-                label, help=help_text, display_text=desc.get("display_text"),
-            )
-        else:  # text
-            cfg[col] = st.column_config.TextColumn(label, help=help_text)
-    return cfg
+    gb = GridOptionsBuilder.from_dataframe(table_df)
+    gb.configure_default_column(sortable=True, filter=False, resizable=True,
+                                suppressMovable=True)
+    gb.configure_selection("single", use_checkbox=False)
+    gb.configure_grid_options(
+        suppressRowClickSelection=True,         # a single click does NOT select
+        onRowDoubleClicked=_JS_DBLCLICK_SELECT,  # ...a double click does
+        rowHeight=30,
+    )
+    spec = display.column_config_spec(profile)
+    for col in table_df.columns:
+        _configure_aggrid_column(gb, col, spec.get(col, {"kind": "text", "label": col}))
+    n = len(table_df)
+    resp = AgGrid(
+        table_df,
+        gridOptions=gb.build(),
+        update_mode=GridUpdateMode.SELECTION_CHANGED,
+        allow_unsafe_jscode=True,
+        enable_enterprise_modules=False,  # Community edition — no trial watermark
+        fit_columns_on_grid_load=False,
+        theme="streamlit",
+        height=min(540, 56 + 30 * max(1, n)),
+        key="results_grid",
+    )
+    sel = getattr(resp, "selected_rows", None)
+    if isinstance(sel, pd.DataFrame):
+        if len(sel) and "symbol" in sel.columns:
+            return str(sel.iloc[0]["symbol"])
+        return None
+    if isinstance(sel, list) and sel:
+        return sel[0].get("symbol")
+    return None
 
 
 # --- sidebar: controls, filters, disclaimer ------------------------------
@@ -415,12 +493,12 @@ def _render_results(
 
     table_df = display.table_view(view, profile)
     col_order = display.column_order(profile, view)
+    # The per-ticker external links are buttons in the detail panel; this AgGrid
+    # build can't render link cells, so drop them from the grid.
+    col_order = [c for c in col_order if c not in ("tv_url", "yf_url")]
     # Append the two universe-wide TA columns (owned here, not by column_order):
-    # Extension renders as badge TEXT (emoji = the only per-cell color cue a
-    # TextColumn allows); In buy zone stays a raw bool for the CheckboxColumn.
-    # table_view copies only column_order cols, so add them from `view` directly.
-    # Display-only augmentation of table_df is safe: the positional click below
-    # still indexes `view` (unmodified), not table_df.
+    # Extension renders as badge TEXT (emoji = the only per-cell color cue);
+    # In buy zone stays a raw bool that the grid formats Yes/No.
     if "extension_state" in view.columns:
         table_df["extension_state"] = view["extension_state"].map(display.extension_badge).values
         if "extension_state" not in col_order:
@@ -429,29 +507,22 @@ def _render_results(
         table_df["in_buy_zone"] = view["in_buy_zone"].values
         if "in_buy_zone" not in col_order:
             col_order.append("in_buy_zone")
-    cfg = _build_column_config(profile)
-    event = st.dataframe(
-        table_df,
-        hide_index=True,
-        width="stretch",
-        column_order=col_order,
-        column_config=cfg,
-        on_select="rerun",
-        selection_mode="single-row",
-        key="results_table",
-    )
-    st.caption(display.filter_summary(len(view), len(df)))
+    # Keep the long 'why' narrative as the FINAL column, then realise the order.
+    if "why" in col_order:
+        col_order = [c for c in col_order if c != "why"] + ["why"]
+    table_df = table_df[[c for c in col_order if c in table_df.columns]]
 
-    # Selection input 1: native table click -> POSITIONAL index into `view`.
-    table_click_symbol = None
-    try:
-        selected_rows = event.selection["rows"]
-    except (AttributeError, KeyError, TypeError):
-        selected_rows = getattr(getattr(event, "selection", None), "rows", []) or []
-    if selected_rows:
-        pos = selected_rows[0]
-        if 0 <= pos < len(view):
-            table_click_symbol = view.iloc[pos]["symbol"]
+    st.caption("Double-click a row to inspect it — or use the selector below the table.")
+    # Selection input 1: a DOUBLE-CLICK on a grid row -> that row's symbol.
+    table_click_symbol = _render_results_grid(table_df, profile)
+    st.caption(display.filter_summary(len(view), len(df)))
+    st.download_button(
+        "⬇ Download CSV",
+        display.export_frame(view, profile).to_csv(index=False).encode("utf-8"),
+        file_name=f"screen_{profile.name}_{cache_day}.csv",
+        mime="text/csv",
+        help="Download the filtered results you see (fit, signals, and the 'why' summary).",
+    )
 
     # Selection input 2: the deterministic selectbox (works before any click).
     # It carries a stable key, but filtering can remove the previously-selected
@@ -486,7 +557,7 @@ def _render_results(
     reasons = row["reasons"]
 
     st.subheader(f"Why {symbol} ranks #{int(row['rank'])}")
-    st.metric("Score", f"{float(row['score']):.3f}", help=display.SCORE_HELP)
+    st.metric("Fit score", f"{display.fit_score(row['score'])} / 100", help=display.SCORE_HELP)
 
     # Jump straight out to an external chart / quote for the inspected ticker.
     _tv_col, _yf_col = st.columns(2)
@@ -511,6 +582,18 @@ def _render_results(
     summary = display.explain_rank(row, reasons, profile, total=len(df))
     if summary:
         st.markdown(summary)
+
+    # Signal radar (snowflake): a visual TL;DR of the reasons table — one axis per
+    # signal, further from the centre = a higher percentile vs the scan. Rendered in
+    # an isolated iframe (components.html); the SVG carries its own theme-robust
+    # colours since that iframe doesn't inherit Streamlit's theme.
+    radar = display.radar_spec(reasons, profile)
+    if len(radar.get("values", [])) >= 3:
+        st.caption("Signal radar — percentile on each of this profile's signals.")
+        components.html(
+            f'<div style="display:flex;justify-content:center">{display.radar_svg(radar)}</div>',
+            height=360,
+        )
 
     reasons_df = display.reasons_to_frame(reasons, profile)
     st.dataframe(

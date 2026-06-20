@@ -1,4 +1,5 @@
 streamlit>=1.40
+streamlit-aggrid>=1.0.5  # AgGrid results table for double-click row selection (its setup.py over-pins altair<5, but altair 5 works fine — keep altair>=5)
 yfinance>=0.2.40
 pandas>=2.0
 numpy>=1.26
