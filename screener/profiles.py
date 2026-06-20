@@ -160,10 +160,28 @@ MOMENTUM = Profile(
     ),
 )
 
+# A "browse everything" lens: NO hard filters, so every scanned name appears
+# (the user asked for an unfiltered view alongside the styled profiles). With no
+# style to "fit", a single market-cap signal gives the full list a conventional
+# ordering — the biggest, most-liquid names first — and keeps the headline
+# Fit/Score meaningful (a size percentile) instead of a flat zero for every row.
+ALL_TICKERS = Profile(
+    name="all",
+    label="All Tickers",
+    filters=(),
+    signals=(
+        SignalSpec("market_cap", 1.0, "higher"),
+    ),
+)
+
 
 # Registry keyed by ``Profile.name``; the single source of truth for the engine,
-# the CLI smoke block, and (later) the M5 dashboard's profile toggle.
-PROFILES: "dict[str, Profile]" = {p.name: p for p in (LONG_TERM, SWING, MOMENTUM)}
+# the CLI smoke block, and the M5 dashboard's profile toggle. ALL_TICKERS sits
+# right after the two styled profiles the unfiltered view is meant to complement;
+# LONG_TERM stays first so it remains the default (``next(iter(PROFILES))``).
+PROFILES: "dict[str, Profile]" = {
+    p.name: p for p in (LONG_TERM, SWING, ALL_TICKERS, MOMENTUM)
+}
 
 
 def get_profile(name: str) -> Profile:

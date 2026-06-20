@@ -136,6 +136,7 @@ def render_state_switch() -> None:
             view = display.apply_filters(
                 df,
                 text=st.session_state.get("f_text", ""),
+                ticker=st.session_state.get("f_ticker", ""),
                 sectors=st.session_state.get("f_sectors", []),
                 min_score=st.session_state.get("f_min_score", 0.0),
                 earnings_only=st.session_state.get("f_earnings_only", False),

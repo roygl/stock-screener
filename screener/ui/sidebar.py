@@ -31,12 +31,22 @@ def render_sidebar(universe) -> None:
             return
 
         st.subheader("Filters")
-        # Discoverability: text filtering now lives in the header search box.
-        st.caption("Type in the search box up top to filter by symbol or name.")
         scanned = st.session_state["scan"]["df"]
         # The earnings-in-window flag depends on the active profile, now read from the
         # header-owned session_state key (no longer returned by this function).
         profile = get_profile(st.session_state.get("profile_name", next(iter(PROFILES))))
+
+        # Dedicated "filter by ticker": a symbol-only substring narrowing of the cached
+        # table (read by apply_filters via results_view, 0 engine calls). Narrower than
+        # the header search box (which also matches the company name).
+        st.text_input(
+            "Ticker",
+            key="f_ticker",
+            placeholder="e.g. AAPL",
+            help="Filter the table to symbols containing this text (case-insensitive). "
+                 "The header search box also matches the company name.",
+        )
+        st.caption("Tip: the header search box up top filters by symbol *or* name.")
 
         st.multiselect("Sector", options=display.sector_options(scanned), key="f_sectors")
         # Initialize-then-no-default (drop the positional 0.0) so a staged NL score
