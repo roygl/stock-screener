@@ -15,6 +15,7 @@ import streamlit as st
 
 from screener.cache import Cache
 from screener.ui.caching import run_cached
+from screener.universe import load_universe
 
 
 # --- run handler: the ONLY engine call site ------------------------------
@@ -43,6 +44,13 @@ def run_scan_if_requested(run_clicked: bool, clear_clicked: bool) -> None:
         profile_name = st.session_state["profile_name"]
         n_names = st.session_state["n_names"]
         cache_day = dt.date.today().isoformat()
+        # If a natural-language query named an in-universe ticker, make sure that one
+        # row is in the scanned slice even when it ranks past n_names. Empty for a
+        # normal scan (so normal scans share the cache); the lru_cached load_universe
+        # makes this membership check cheap. ensure_symbol (in nl_state) has already
+        # added any brand-new, out-of-universe ticker, so by here it's in the universe.
+        named = st.session_state.get("f_text", "").strip().upper()
+        include_symbol = named if named and named in set(load_universe()["symbol"]) else ""
         spinner_msg = (
             f"Cache cleared — re-fetching {n_names} names from Yahoo. This can take a while…"
             if clear_clicked
@@ -50,7 +58,7 @@ def run_scan_if_requested(run_clicked: bool, clear_clicked: bool) -> None:
             "and can take a while…"
         )
         with st.spinner(spinner_msg):
-            df = run_cached(profile_name, n_names, cache_day)
+            df = run_cached(profile_name, n_names, cache_day, include_symbol)
         st.session_state["scan"] = {
             "profile_name": profile_name,
             "n_names": n_names,

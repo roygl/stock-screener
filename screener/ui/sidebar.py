@@ -27,10 +27,14 @@ def render_sidebar(universe) -> "tuple[bool, bool, bool]":
             key="nl_query",
             placeholder="e.g. top 20 momentum tech names, high conviction",
         )
+        # Initialize-then-no-default: seed the key once (so a remembered choice from
+        # localStorage or a staged NL value survives) and pass NO index=, the
+        # canonical pattern that avoids Streamlit's default-vs-session_state warning.
+        if "nl_provider" not in st.session_state:
+            st.session_state["nl_provider"] = agent.DEFAULT_PROVIDER
         st.radio(
             "Engine",
             options=list(agent.PROVIDERS),
-            index=list(agent.PROVIDERS).index(agent.DEFAULT_PROVIDER),
             format_func=lambda pid: agent.PROVIDERS[pid].label,
             key="nl_provider",
         )
@@ -79,25 +83,27 @@ def render_sidebar(universe) -> "tuple[bool, bool, bool]":
                  "Detailed: also shows this profile's signal columns.",
         )
 
-        # The production S&P 500 universe is 503 names, so this is min 5 / max 503 /
-        # default 25 as specced. The bounds are clamped only so a degenerate tiny
-        # universe (fewer than 5 names) can't make min_value exceed max_value.
+        # min 5 / max = the whole universe / default = ALL names. The bounds are
+        # clamped only so a degenerate tiny universe (fewer than 5 names) can't make
+        # min_value exceed max_value.
         universe_len = len(universe)
         slider_min = min(5, universe_len)
         slider_max = max(slider_min, universe_len)
         if slider_max > slider_min:
             # Initialize-then-no-default: seed the key once (so a staged NL value or a
             # prior selection survives) and pass NO value= arg, the canonical pattern
-            # that avoids Streamlit's default-vs-session_state warning.
+            # that avoids Streamlit's default-vs-session_state warning. Default scans
+            # the FULL universe; dial the slider down for a faster cold scan.
             if "n_names" not in st.session_state:
-                st.session_state["n_names"] = min(25, slider_max)
+                st.session_state["n_names"] = slider_max
             n_names = st.slider(
                 "Universe size (names to scan)",
                 min_value=slider_min,
                 max_value=slider_max,
                 step=5,
                 key="n_names",
-                help="A cold scan hits Yahoo once per name; start small.",
+                help="Defaults to all names. A cold scan hits Yahoo once per name; "
+                     "dial this down for a faster first run.",
             )
         else:
             # Universe too small for a range slider — scan all of it. Mirror into the

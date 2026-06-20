@@ -144,8 +144,11 @@ PROVIDERS: "dict[str, Provider]" = {
     ),
 }
 
-# Active backend when none is selected. "anthropic" preserves today's behavior exactly.
-DEFAULT_PROVIDER = "anthropic"
+# Active backend when none is selected. Gemini is the default: its free tier needs
+# only GEMINI_API_KEY / GOOGLE_API_KEY, and gemini-2.5-flash is the default model.
+# Falls back to the offline rule-based parser if no key/SDK is present (see
+# availability_status), so this never hard-requires a key.
+DEFAULT_PROVIDER = "gemini"
 
 SYSTEM_PROMPT = (
     "You convert a user's natural-language request into parameters for a US "

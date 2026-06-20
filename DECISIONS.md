@@ -4,6 +4,33 @@ Newest first. Each entry: the decision, and *why*, so nothing gets re-argued lat
 
 ---
 
+2026-06-20: **Stage-5 refactor + universe expansion + all-stocks/Gemini defaults + browser-remembered choices + NL ticker auto-fetch.**
+Branch `feat/stage5-universe-gemini-persistence`. Six stages, each its own commit and verified between (313 → 334 tests;
+app browser-smoke + localStorage round-trip + live yfinance fetch). Decisions:
+- **Did the deferred Stage-5 split (behavior-preserving, move-don't-rewrite).** `screener/display.py` (1427 ln) →
+  `screener/display/` package (`formatting`/`features`/`tables`/`reasons`/`tactical`/`radar`/`text` + `_base`); `__init__`
+  re-exports the full 58-name public API so every `display.X` call site is unchanged. `app.py` (879 ln) → a 68-line thin
+  ordered entrypoint + `screener/ui/` package (`secrets_bridge`/`caching`/`nl_state`/`grid`/`sidebar`/`scan`/`detail_panel`/
+  `results_view`/`transparency`/`persistence`). UI package lives **under `screener/`** (the sole import root; no top-level
+  `ui/`) so no packaging change. Streamlit's strict top-to-bottom order, the single engine call site, and every
+  `session_state` key preserved exactly. Also deleted the dead duplicate top-level `universe.py`.
+- **Universe 503 → 618** (+115 curated popular non-S&P names: AI infra, semis, nuclear/SMR, crypto-treasury, quantum,
+  space, fintech, China ADRs, meme), incl. the requested CRWV/NBIS/OKLO/BMNR/MSTR (TSLA was already in). Each validated
+  via yfinance; sectors mapped to the CSV's **GICS** taxonomy — the engine prefers the live yfinance sector at scan time,
+  but the CSV seeds the sidebar sector filter + the NL sector enum, so new rows must match the existing GICS strings.
+- **Default universe size = ALL names** (was 25) and **default LLM = Gemini** (`gemini-2.5-flash`; was Anthropic). Both
+  still degrade gracefully — the slider dials down for a faster cold scan; no key → the offline rule-based parser.
+- **Remember sidebar choices in the browser via localStorage** (`streamlit-local-storage`): profile, engine, universe
+  size, and table density survive refresh / new tab / browser restart. Chose localStorage over `st.query_params` (the
+  user asked for "browser cache" — clean URLs, cross-tab). Values are validated/clamped on read so a stale store can't
+  crash a keyed widget; an explicit NL Interpret still wins for that run; degrades to non-persistent if the component is
+  absent. (The Engine radio moved from `index=` to the initialize-then-no-default seed so persistence can pre-seed it.)
+- **NL free-text auto-fetches an unknown ticker.** If a query names a ticker not in the universe, the app fetches it via
+  the data provider, appends it to `data/universe.csv` (GICS-mapped sector), and **unions it into the scan** via a scoped
+  `include_symbol` (only ever an exact universe ticker) so filtering never re-runs the engine. `agent.py` stays
+  network-free — the fetch lives in the UI layer (`ui/nl_state` → `universe.ensure_symbol`), which never raises. NOTE: on
+  Streamlit Cloud's ephemeral filesystem these runtime appends are lost on restart; durable additions need the CSV committed.
+
 2026-06-20: **Declutter the UI, surface price/ATR/company info, and make Gemini NL search reliable.** The user found
 the results table over-stacked (19–23 flat columns), couldn't see the current **price**, **ATR**, or **what the
 company does**, and had a valid Gemini key that silently fell back to the offline parser. Shipped on branch
