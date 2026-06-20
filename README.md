@@ -23,9 +23,13 @@ python -m venv .venv
 .venv/bin/python -m pip install -r requirements.txt
 ```
 
-Dependencies (`requirements.txt`): `streamlit`, `yfinance`, `pandas`, `numpy`,
-`pyarrow` (Parquet engine for the price cache), and `pytest` (an *optional* test
-runner — the suite also runs as a plain script).
+Dependencies (`requirements.txt`): `streamlit`, `streamlit-aggrid` (results
+table), `yfinance`, `pandas`, `numpy`, `pyarrow` (Parquet engine for the price
+cache), `streamlit-local-storage` (remembers your sidebar choices in the
+browser), `pytest` (an *optional* test runner — the suite also runs as a plain
+script), and the *optional* LLM SDKs `anthropic` / `openai` (the latter also
+drives the Gemini / xAI / Mistral / Ollama backends) for the natural-language
+agent — without a key it degrades to the offline rule-based parser.
 
 ## Run the app
 
@@ -36,7 +40,9 @@ runner — the suite also runs as a plain script).
 Streamlit opens the dashboard in your browser. Then:
 
 1. In the sidebar, pick a **Profile** and a **Universe size** (names to scan;
-   default 25, max = the full 503-name universe).
+   **defaults to all ~618 names** — dial it down for a faster cold scan). Your
+   profile, NL engine, universe size, and table density are **remembered in your
+   browser** (localStorage), so they persist across refreshes and visits.
 2. Press **Run scan**. The engine runs at **exactly one site** — behind this
    button — so the page never auto-runs a slow full-universe scan on a rerun.
 3. **Sort** by clicking a table header and **filter** with the sidebar widgets
