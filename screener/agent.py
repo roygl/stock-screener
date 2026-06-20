@@ -118,7 +118,9 @@ PROVIDERS: "dict[str, Provider]" = {
         label="Google (Gemini)",
         kind="openai",
         env_key="GEMINI_API_KEY",
-        default_model="gemini-2.0-flash",
+        # 2.5-flash, not 2.0-flash: Google has zeroed the free-tier quota on the
+        # 2.0-* models (every call 429s "limit: 0"); 2.5-flash still has free quota.
+        default_model="gemini-2.5-flash",
         base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
         model_env="SCREENER_GEMINI_MODEL",
     ),
