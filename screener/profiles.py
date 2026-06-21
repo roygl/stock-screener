@@ -177,10 +177,10 @@ ALL_TICKERS = Profile(
 
 # Registry keyed by ``Profile.name``; the single source of truth for the engine,
 # the CLI smoke block, and the M5 dashboard's profile toggle. ALL_TICKERS sits
-# right after the two styled profiles the unfiltered view is meant to complement;
-# LONG_TERM stays first so it remains the default (``next(iter(PROFILES))``).
+# FIRST so the unfiltered "browse everything" lens is the leftmost option in the
+# switcher AND the default (``next(iter(PROFILES))``); the styled profiles follow.
 PROFILES: "dict[str, Profile]" = {
-    p.name: p for p in (LONG_TERM, SWING, ALL_TICKERS, MOMENTUM)
+    p.name: p for p in (ALL_TICKERS, LONG_TERM, SWING, MOMENTUM)
 }
 
 

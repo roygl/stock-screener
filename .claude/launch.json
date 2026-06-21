@@ -20,6 +20,26 @@
         "false"
       ],
       "port": 8765
+    },
+    {
+      "name": "screener-repro",
+      "autoPort": false,
+      "runtimeExecutable": ".venv/bin/python",
+      "runtimeArgs": [
+        "-m",
+        "streamlit",
+        "run",
+        "_repro_app.py",
+        "--server.headless",
+        "true",
+        "--server.port",
+        "8766",
+        "--server.address",
+        "127.0.0.1",
+        "--browser.gatherUsageStats",
+        "false"
+      ],
+      "port": 8766
     }
   ]
 }
