@@ -121,3 +121,20 @@ def buy_zone_for_symbol(symbol: str, cache_day: str):
     from screener import levels
     prices = YFinanceProvider().price_history(symbol)
     return levels.buy_zone(prices, timeframe="1d")
+
+
+@st.cache_data(show_spinner=False)
+def mcp_supplement_for_symbol(symbol: str, cache_day: str) -> dict:
+    """Supplementary fundamentals + earnings for ONE inspected symbol from an
+    OPTIONAL external MCP server — or ``{}`` when the feature is OFF/unavailable.
+
+    Milestone B. OFF by default: returns ``{}`` with NO import-cost beyond the
+    cheap ``mcp_provider`` module and NO network unless ``MCP_STOCK_DATA_ENABLED``
+    is set (the gate lives in :mod:`screener.mcp_provider`; the heavy ``mcp`` SDK
+    is lazy-imported only on an actual call). Date-keyed like the other per-symbol
+    memos, so an already-inspected name is an instant warm read. The plain-dict
+    result pickles cleanly through ``st.cache_data``. This runs ONLY when a user
+    inspects a single ticker — never on the universe-scan path.
+    """
+    from screener.mcp_provider import supplementary_for_symbol   # import INSIDE
+    return supplementary_for_symbol(symbol)

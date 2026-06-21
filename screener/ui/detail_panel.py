@@ -28,6 +28,7 @@ from screener.ui.caching import (
     buy_zone_for_symbol,
     extension_for_symbol,
     levels_for_symbol,
+    mcp_supplement_for_symbol,
     patterns_for_symbol,
 )
 
@@ -286,3 +287,32 @@ def render_detail(df: pd.DataFrame, symbol: str, profile, cache_day: str) -> Non
     st.caption(display.buy_zone_caption(zone))
     with st.expander("ℹ️ About the buy zone"):
         st.caption(display.BUY_ZONE_HELP)
+
+    # --- Supplementary data (opt-in external MCP overlay) -----------------
+    # OFF by default (Milestone B). When MCP_STOCK_DATA_ENABLED is set, an external
+    # stdio MCP server (e.g. `uvx yfmcp@latest`) supplies an INDEPENDENT
+    # fundamentals + next-earnings snapshot for the inspected ticker. It is fenced
+    # off from the engine's own numbers (untrusted, validated + range-clamped in
+    # screener.mcp_provider) and renders ONLY when the gate is on AND the server
+    # returned something — so the default panel is unchanged. Like the TA sections,
+    # this fetch lives in the RESULTS state only, never on the cold-scan path.
+    supp = mcp_supplement_for_symbol(symbol, cache_day)
+    if supp:
+        funds = supp.get("fundamentals") or {}
+        st.divider()
+        st.subheader("Supplementary data")
+        _fpe = funds.get("forward_pe")
+        _tpe = funds.get("trailing_pe")
+        _sc1, _sc2, _sc3, _sc4 = st.columns(4)
+        _sc1.metric("Forward P/E", "—" if _fpe is None else f"{float(_fpe):.1f}")
+        _sc2.metric("Trailing P/E", "—" if _tpe is None else f"{float(_tpe):.1f}")
+        _sc3.metric("Revenue growth", display.format_signed_pct(funds.get("revenue_growth")))
+        _sc4.metric("Earnings growth", display.format_signed_pct(funds.get("earnings_growth")))
+        _supp_earn = supp.get("earnings_date")
+        if _supp_earn:
+            st.caption(f"Next earnings (reported by source): {_supp_earn}")
+        st.caption(
+            f"External data via an opt-in MCP server (`{supp.get('command', '')}`) — "
+            "supplementary to the screener's own engine figures, validated and "
+            "range-clamped on the way in. Not financial advice."
+        )

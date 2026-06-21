@@ -4,6 +4,44 @@ Newest first. Each entry: the decision, and *why*, so nothing gets re-argued lat
 
 ---
 
+2026-06-21: **MCP Milestone B (v1) + two UI refinements.** Branch `feat/header-redesign-sector-heatmap`.
+
+UI refinements (both pure display; no engine touch):
+- **Ticker "ⓘ" → tooltip only.** The grid no longer appends the "ⓘ" glyph to the ticker; the company name still
+  surfaces as the cell's native hover tooltip (`tooltipValueGetter` + `enableBrowserTooltips`). The bare symbol reads
+  cleaner and the name is still one hover away and still in the row data + CSV. (`ui/grid.py`; dropped the now-unused
+  `_JS_SYMBOL_INFO` formatter.)
+- **"All Tickers" is now the default + leftmost profile.** Reordered `PROFILES` to `(ALL_TICKERS, LONG_TERM, SWING,
+  MOMENTUM)`, so the switcher's `list(PROFILES)` leads with it AND `next(iter(PROFILES))` (the cold-load seed) selects
+  it. Why: the unfiltered "browse everything" lens is the most neutral landing view. The order-lock test now asserts
+  `"all"` is first (was `"long_term"`).
+
+**Milestone B (v1): opt-in, OFF-by-default MCP overlay.** The app can now act as a CLIENT of an external stock-info
+MCP server to enrich the INSPECTED ticker's detail panel with a supplementary fundamentals + next-earnings snapshot.
+Chosen deliberately narrow (the registry has no stock connector, so the user supplies the server via env). Decisions:
+- **Local stdio, not the Anthropic remote connector (v1).** A local `mcp` Python-SDK client over stdio keeps the
+  auth token on the machine and runs no-key servers today; the remote `mcp_servers` connector (beta header
+  `mcp-client-2025-11-20`) needs an HTTPS server + routes data through Claude — deferred. Default command
+  `uvx yfmcp@latest` (narumiruna/yfinance-mcp): no key, same Yahoo source, so the whole path is exercisable for free.
+  Finnhub (free key, fundamentals+earnings independent of Yahoo) is the documented keyed upgrade via `MCP_STOCK_DATA_CMD`.
+- **Detail-panel only; fundamentals + earnings; NOT the scan.** Enrich only the single inspected ticker (a new
+  date-keyed `mcp_supplement_for_symbol` memo, parallel to the TA memos), never the universe scan — so `scan.py` /
+  `run_cached` / the engine are untouched and the cold-scan guard holds *by construction* (MCP runs only on inspect).
+  Prices stay on yfinance (the deterministic backbone); MCP is a supplementary overlay rendered in its own, clearly
+  fenced "Supplementary data" section with a source + not-advice caption. Smallest req volume / validation surface.
+- **Containment is the point.** New pure `screener/mcp_provider.py` is the single home for: an env GATE
+  (`MCP_STOCK_DATA_ENABLED`; OFF ⇒ zero `mcp` import / zero network); a default-deny tool ALLOW-LIST
+  (`{yfinance_get_ticker_info}` only); `validate_mcp_payload` / `validate_mcp_earnings` that coerce + range-clamp the
+  UNTRUSTED payload and NEVER raise (modeled on `agent.validate_request`); a connect-time tool-surface SHA-256
+  fingerprint with an optional pin (`MCP_STOCK_DATA_TOOLS_SHA256`) as a rug-pull guard; a suspicious-description
+  screen; a result size cap + `isError` guard; a hard timeout; the auth token from env only (no key in the UI). Every
+  failure fails soft to empty/None. `mcp` is an OPTIONAL dependency — the app imports and runs fine without it.
+- **⚙ Settings shows a READ-ONLY status line** (✓/○ + the reason), mirroring the LLM-engine status; deliberately no
+  toggle or key widget (env-driven, key-less ethos). +17 offline tests (gate-off zero-calls, clamp/never-raise,
+  allow-list, fingerprint pin, decode caps, fail-soft, happy path, scan-path-never-imports-MCP); 393 pass.
+
+---
+
 2026-06-21: **Ticker filter + "All Tickers" profile + ticker-centric results table.** Branch
 `feat/header-redesign-sector-heatmap`. A small follow-on to the redesign, all over the cached scan (no engine call
 and no cold-scan-guard change). Decisions:

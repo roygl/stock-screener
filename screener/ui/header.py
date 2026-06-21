@@ -227,6 +227,20 @@ def render_header(universe) -> "tuple[bool, bool, bool]":
                             "(see `.streamlit/secrets.toml.example`)."
                         )
 
+                # Supplementary external data (Milestone B): a READ-ONLY, self-
+                # diagnosing status line, mirroring the LLM-engine status above. The
+                # overlay is env-gated (OFF by default) and key-less by design, so
+                # there is deliberately NO toggle or key widget here — only its state.
+                from screener import mcp_provider
+                _mcp_ok, _mcp_reason = mcp_provider.availability_status()
+                st.caption(
+                    (f"✓ Supplementary data (MCP): {_mcp_reason}." if _mcp_ok
+                     else f"○ Supplementary data (MCP): {_mcp_reason}."),
+                    help="Opt-in external stock-data MCP server (detail-panel fundamentals + "
+                         "earnings). Enable with MCP_STOCK_DATA_ENABLED=true; configure the "
+                         "stdio command with MCP_STOCK_DATA_CMD (default: uvx yfmcp@latest).",
+                )
+
                 # Asset-class toggle: a disabled no-op stub (crypto is v2).
                 st.radio("Asset class", ["US equities"], disabled=True, help="Crypto arrives in v2.")
 

@@ -8,3 +8,4 @@ pytest>=8  # optional test runner (suite also runs via: python tests/test_indica
 anthropic>=0.40  # optional: enables the LLM-backed NL agent; without it (or without ANTHROPIC_API_KEY) the agent degrades to the offline rule-based parser
 openai>=1.40  # optional: OpenAI-compatible LLM backends (OpenAI/xAI/Gemini/Mistral/Ollama) for the NL agent
 streamlit-local-storage>=0.0.25  # remembers sidebar choices (profile/engine/universe size/density) in the browser's localStorage; app degrades to non-persistent if absent
+mcp>=1.0  # optional (Milestone B): opt-in supplementary external stock data via a local stdio MCP server; OFF unless MCP_STOCK_DATA_ENABLED=true — the app imports and runs fine without it
