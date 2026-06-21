@@ -57,16 +57,10 @@ _JS_FIT_STYLE = JsCode(
     " borderRadius:'3px'};"
     " }"
 )
-# Ticker cell: append a small "ⓘ" affordance when the row carries a company name,
-# and surface that name as the cell's hover tooltip — so the Name column can be
-# hidden from the grid while the name stays one hover away. The underlying cell
-# VALUE is untouched (selection still reads the bare symbol); only the rendered
-# text and the tooltip change.
-_JS_SYMBOL_INFO = JsCode(
-    "function(p){ if(p.value==null) return ''; "
-    "var n = p.data ? p.data.name : null; "
-    "return (n!=null && String(n).trim()!=='') ? p.value + ' ⓘ' : p.value; }"
-)
+# Ticker cell: surface the company name as the cell's hover tooltip — so the Name
+# column can be hidden from the grid while the name stays one hover away. The cell
+# shows the bare symbol (no glyph); only the hover tooltip is added. The underlying
+# cell VALUE is untouched, so selection still reads the bare symbol.
 _JS_SYMBOL_TOOLTIP = JsCode(
     "function(p){ var n = p.data ? p.data.name : null; "
     "return (n!=null && String(n).trim()!=='') ? String(n) : (p.value || ''); }"
@@ -104,14 +98,13 @@ def _configure_aggrid_column(gb, col: str, desc: dict) -> None:
                             valueFormatter=_js_number(0), type=["numericColumn"],
                             width=72, pinned="left")
     elif col == "symbol":
-        # The ticker carries the company name as an "ⓘ" hover tooltip (the Name
-        # column itself is hidden below); pinned left, right after rank.
+        # The ticker shows the bare symbol and carries the company name as a hover
+        # tooltip (the Name column itself is hidden below); pinned left, after rank.
         gb.configure_column(col, header_name=label, headerTooltip=tip, width=104,
-                            pinned="left", valueFormatter=_JS_SYMBOL_INFO,
-                            tooltipValueGetter=_JS_SYMBOL_TOOLTIP)
+                            pinned="left", tooltipValueGetter=_JS_SYMBOL_TOOLTIP)
     elif col == "name":
         # Kept in the row data (so the symbol tooltip can read it, and the CSV still
-        # carries it) but HIDDEN from the grid — the ticker's ⓘ surfaces it instead.
+        # carries it) but HIDDEN from the grid — the ticker's hover tooltip shows it.
         gb.configure_column(col, header_name=label, hide=True)
     elif col == "market_cap":
         gb.configure_column(col, header_name=label, headerTooltip=tip,
@@ -167,7 +160,7 @@ def render_results_grid(table_df: pd.DataFrame, profile) -> "str | None":
         suppressRowClickSelection=True,         # a single click does NOT select
         onRowDoubleClicked=_JS_DBLCLICK_SELECT,  # ...a double click does
         rowHeight=30,
-        # Use native browser title-attribute tooltips so the ticker's ⓘ reliably
+        # Use native browser title-attribute tooltips so the ticker reliably
         # surfaces the company name (and the Why cell its full text) on hover,
         # without depending on AgGrid's custom tooltip component/styling.
         enableBrowserTooltips=True,

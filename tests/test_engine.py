@@ -146,8 +146,8 @@ def test_registry_has_expected_profiles():
     for name, p in prof.PROFILES.items():
         assert isinstance(p, Profile)
         assert p.name == name
-    # long_term stays first so it remains the default (next(iter(PROFILES))).
-    assert next(iter(prof.PROFILES)) == "long_term"
+    # "all" sits first so it is the leftmost switcher option and the default.
+    assert next(iter(prof.PROFILES)) == "all"
     # The "all" lens is unfiltered (every scanned name appears).
     assert prof.PROFILES["all"].filters == ()
 
