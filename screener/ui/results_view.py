@@ -72,7 +72,19 @@ def render_results(
 
     st.caption("Double-click a row to inspect it — or use the selector below the table.")
     # Selection input 1: a DOUBLE-CLICK on a grid row -> that row's symbol.
-    table_click_symbol = render_results_grid(table_df, profile)
+    # AgGrid's `selected_rows` PERSISTS across reruns: once a row is selected it is
+    # returned on EVERY rerun, not just the one the user clicked. Since
+    # resolve_selection gives a table click top precedence ("a fresh table click
+    # wins"), a persisted grid selection would outrank the dropdown forever — so
+    # after clicking a row, switching the "Inspect a row" selector below never took
+    # effect. Treat the grid as a selection input ONLY when its symbol CHANGES
+    # (a genuinely fresh click); on an unchanged grid selection pass None so the
+    # dropdown (selectbox_symbol) governs.
+    grid_symbol = render_results_grid(table_df, profile)
+    table_click_symbol = (
+        grid_symbol if grid_symbol != st.session_state.get("_last_grid_symbol") else None
+    )
+    st.session_state["_last_grid_symbol"] = grid_symbol
     st.caption(display.filter_summary(len(view), len(df)))
     st.download_button(
         "⬇ Download CSV",
