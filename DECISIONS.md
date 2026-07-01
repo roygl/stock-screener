@@ -4,6 +4,21 @@ Newest first. Each entry: the decision, and *why*, so nothing gets re-argued lat
 
 ---
 
+2026-07-02: **Fix — the "Inspect a row" dropdown couldn't override a grid click.**
+`ui/results_view.py` only. AgGrid's `selected_rows` persists across reruns, so
+`render_results_grid` returned the last-clicked row on *every* rerun, not just the
+run of the click. Because `resolve_selection` gives a table click top precedence
+("a fresh table click wins"), that persisted selection outranked the selectbox
+forever — after clicking any row, changing the *Inspect a row* dropdown never
+fetched the newly chosen symbol (it snapped back to the grid's row). Fix: track
+the grid's returned symbol in `st.session_state["_last_grid_symbol"]` and pass it
+as `table_click_symbol` **only when it changes** (a genuinely fresh click);
+otherwise pass `None` so the dropdown governs. Display-only bookkeeping — no engine
+path touched, cold-scan guard unaffected (`test_app_guard.py` green, `test_display.py`
+66 green).
+
+---
+
 2026-06-21: **MCP Milestone B (v1) + two UI refinements.** Branch `feat/header-redesign-sector-heatmap`.
 
 UI refinements (both pure display; no engine touch):
