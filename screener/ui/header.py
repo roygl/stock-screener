@@ -73,6 +73,27 @@ def render_header(universe) -> "tuple[bool, bool, bool]":
         @media (prefers-color-scheme: dark) {
             .st-key-app_header { background-color: rgb(14, 17, 23); }
         }
+        /* --- Mobile (Decision D8) -------------------------------------------
+           On a phone Streamlit stacks every column in the header vertically, so
+           the control surface (search, Interpret, Run, profile bar, density /
+           watchlist / recent row, captions) grew taller than the viewport and
+           pushed the results table fully below the fold. Worse, a `position:
+           sticky` header that is itself taller than the screen leaves no room to
+           scroll the table "under" it and the scroll appears to fight back.
+           So on narrow screens we (a) DROP the sticky pin — the header scrolls
+           away normally, freeing the whole viewport for the table — and (b)
+           tighten the vertical rhythm so the table is reachable in one short
+           swipe. Desktop is untouched (the pin + spacing above still apply). */
+        @media (max-width: 640px) {
+            [data-testid="stLayoutWrapper"]:has(> .st-key-app_header) {
+                position: static;
+            }
+            .st-key-app_header { padding-bottom: 0.25rem; }
+            /* Shrink the gaps Streamlit puts between the stacked rows/widgets so
+               the header isn't a full screen of whitespace on mobile. */
+            .st-key-app_header [data-testid="stVerticalBlock"] { gap: 0.4rem; }
+            .st-key-app_header [data-testid="stCaptionContainer"] { margin: 0; }
+        }
         </style>
         """,
         unsafe_allow_html=True,

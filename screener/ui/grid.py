@@ -8,6 +8,7 @@ SELECTION_CHANGED only (NOT on sort/filter) so the cold-scan guard holds.
 from __future__ import annotations
 
 import pandas as pd
+import streamlit as st
 from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode, JsCode
 
 from screener import display
@@ -153,6 +154,26 @@ def render_results_grid(table_df: pd.DataFrame, profile) -> "str | None":
     double-click selection gesture.
     """
     gb = GridOptionsBuilder.from_dataframe(table_df)
+    # --- Mobile grid sizing (Decision D8) --------------------------------
+    # On a phone the AgGrid's own vertical scroll competes with the page scroll:
+    # the grid can grow to 540px (most of a small viewport), so a swipe that
+    # starts inside it scrolls rows, and only "catches" the page at the grid's
+    # edge — the trapped-scroll feel the user hit. Capping the grid to a fraction
+    # of the viewport (max-height) keeps it a compact, self-contained scroll area
+    # with clear page above/below it to grab. A contained <style> (mirrors the
+    # header's single-style precedent); desktop keeps the Python `height` below.
+    st.markdown(
+        """
+        <style>
+        @media (max-width: 640px) {
+            [data-testid="stAgGrid"], .st-key-results_grid div[class*="ag-theme"] {
+                max-height: 60vh !important;
+            }
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
     gb.configure_default_column(sortable=True, filter=False, resizable=True,
                                 suppressMovable=True)
     gb.configure_selection("single", use_checkbox=False)
